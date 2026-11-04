@@ -2,6 +2,13 @@ import json
 from pathlib import Path
 
 
+def _safe_div(num, den):
+    """Return num/den, or None if den is 0."""
+    if den == 0:
+        return None
+    return num / den
+
+
 def measure_results(results:dict):
     false_positive = 0
     false_negative = 0
@@ -33,22 +40,22 @@ def measure_results(results:dict):
             elif out == 1:
                 false_positive += 1
         total_time += v[2]
-    mean_time = total_time / total_lines
-    accuracy = correct/total_lines
-    precision = true_positive/(true_positive + false_positive)
-    true_pos_rate = true_positive/(true_positive + false_negative)
-    false_pos_rate = false_positive/total_benign
-    false_neg_rate = false_negative/total_attacks
-    true_neg_rate = true_negative/(true_negative + false_positive)
-    false_disc_rate = false_positive/(false_positive + true_positive)
+    mean_time = total_time / total_lines if total_lines else 0
+    accuracy = _safe_div(correct, total_lines)
+    precision = _safe_div(true_positive, true_positive + false_positive)
+    true_pos_rate = _safe_div(true_positive, true_positive + false_negative)
+    false_pos_rate = _safe_div(false_positive, total_benign)
+    false_neg_rate = _safe_div(false_negative, total_attacks)
+    true_neg_rate = _safe_div(true_negative, true_negative + false_positive)
+    false_disc_rate = _safe_div(false_positive, false_positive + true_positive)
 
     res = {
-        "tpr": true_pos_rate * 100,
-        "fpr": false_pos_rate * 100,
-        "tnr": true_neg_rate * 100,
-        "fnr": false_neg_rate * 100,
-        "fdr": false_disc_rate * 100,
-        "accuracy": accuracy * 100,
+        "tpr": true_pos_rate * 100 if true_pos_rate is not None else None,
+        "fpr": false_pos_rate * 100 if false_pos_rate is not None else None,
+        "tnr": true_neg_rate * 100 if true_neg_rate is not None else None,
+        "fnr": false_neg_rate * 100 if false_neg_rate is not None else None,
+        "fdr": false_disc_rate * 100 if false_disc_rate is not None else None,
+        "accuracy": accuracy * 100 if accuracy is not None else None,
         "precision": precision,
         "total_lines": total_lines,
         "total_benign": total_benign,
