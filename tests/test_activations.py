@@ -3,12 +3,15 @@ import shutil
 import subprocess
 import sys
 from collections import namedtuple
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from data_processing.activations import (
     DEFAULT_MODEL,
+    append_index,
+    atomic_write,
     capture_activations,
     load_model_and_tokenizer,
 )
@@ -20,6 +23,15 @@ safetensors_torch = pytest.importorskip("safetensors.torch")
 from safetensors import safe_open
 
 DiskUsage = namedtuple("DiskUsage", ["total", "used", "free"])
+
+
+def read_index(out_dir):
+    index = json.loads((out_dir / "index.json").read_text(encoding="utf-8"))
+    index["shards"] = {
+        entry["id"]: entry
+        for entry in map(json.loads, (out_dir / "index.jsonl").read_text().splitlines())
+    }
+    return index
 
 
 @pytest.fixture(scope="module")
@@ -84,7 +96,7 @@ def test_shapes_dtype_and_shard_metadata(tiny_lm, synthetic_dataset):
     assert summary["dtype"] == "float16"
     assert summary["layers"] == [0]
 
-    index = json.loads((out_dir / "index.json").read_text(encoding="utf-8"))
+    index = read_index(out_dir)
     hidden_size = int(model.config.hidden_size)
     per_token_seen = 0
 
@@ -143,7 +155,7 @@ def test_layer_selection_and_truncation(tiny_lm, synthetic_dataset):
     assert summary["layers"] == all_layers
     assert summary["truncated_count"] == 4
 
-    index = json.loads((out_dir / "index.json").read_text(encoding="utf-8"))
+    index = read_index(out_dir)
     for entry in index["shards"].values():
         assert entry["truncated"] is True
         assert entry["token_count"] == 4
@@ -206,6 +218,7 @@ def test_resume_skips_done_ids_and_is_deterministic(tiny_lm, synthetic_dataset, 
     assert resumed["records"] == 4
     assert shard_1_path.read_bytes() == shard_1_bytes
 
+    entries_before_rerun = (out_dir / "index.jsonl").read_bytes()
     index_before_rerun = (out_dir / "index.json").read_bytes()
     with patch.object(model, "forward", wraps=model.forward) as spy_forward:
         rerun = capture_activations(
@@ -218,6 +231,7 @@ def test_resume_skips_done_ids_and_is_deterministic(tiny_lm, synthetic_dataset, 
             min_free_bytes=0,
         )
         assert spy_forward.call_count == 0
+    assert (out_dir / "index.jsonl").read_bytes() == entries_before_rerun
     assert rerun["captured"] == 0
     assert rerun["skipped"] == 4
     assert (out_dir / "index.json").read_bytes() == index_before_rerun
@@ -264,6 +278,7 @@ def test_resume_skips_done_ids_and_is_deterministic(tiny_lm, synthetic_dataset, 
         min_free_bytes=0,
     )
     assert (fresh_dir / "index.json").read_bytes() == (resumed_same_dir / "index.json").read_bytes()
+    assert (fresh_dir / "index.jsonl").read_bytes() == (resumed_same_dir / "index.jsonl").read_bytes()
     for name in ("benign-1", "benign-2", "benign-3", "benign-4"):
         assert (fresh_dir / f"shards/{name}.safetensors").read_bytes() == (
             resumed_same_dir / f"shards/{name}.safetensors"
@@ -352,7 +367,7 @@ def test_disk_limit_stops_run_cleanly(tiny_lm, synthetic_dataset):
     assert mid["captured"] == 1
     assert mid["records"] == 1
     assert mid["remaining"] == 3
-    index = json.loads((out_dir / "index.json").read_text(encoding="utf-8"))
+    index = read_index(out_dir)
     assert index["status"] == "stopped_disk_limit"
     assert list(index["shards"]) == ["benign-1"]
 
@@ -395,3 +410,91 @@ def test_cli_outputs_only_aggregates_without_payload_text(tiny_lm, synthetic_dat
     assert failed.returncode == 2
     assert "PRIVATE_BENIGN_SENTINEL" not in failed.stdout + failed.stderr
     assert "Traceback" not in failed.stderr
+
+
+def test_index_append_writes_constant_bytes(tmp_path):
+    path = tmp_path / "index.jsonl"
+    # Measure actual writes, rather than file growth (which would miss full rewrites).
+    writes = []
+    original_open = Path.open
+
+    def measured_open(path, *args, **kwargs):
+        handle = original_open(path, *args, **kwargs)
+        proxy = MagicMock(wraps=handle)
+        proxy.__enter__.return_value = proxy
+        proxy.__exit__.side_effect = handle.__exit__
+
+        def write(data):
+            writes.append(len(data))
+            return handle.write(data)
+
+        proxy.write.side_effect = write
+        return proxy
+
+    # Fixed-width ids isolate growth in record count from growth in record size.
+    with (
+        patch.object(Path, "open", measured_open),
+        patch("data_processing.activations.os.fsync"),
+    ):
+        for count in range(1000):
+            append_index(path, {"id": f"benign-{count:04d}", "bytes": 752})
+    assert writes == [33] * 1000
+    assert path.stat().st_size == 33000
+    assert len(path.read_text().splitlines()) == 1000
+
+
+def test_resume_recovers_interrupted_append(tiny_lm, synthetic_dataset):
+    model, tokenizer = tiny_lm
+    data, _, out_dir = synthetic_dataset
+    kwargs = {"model": model, "tokenizer": tokenizer, "min_free_bytes": 0}
+    # A shard can be written before its index append is interrupted.
+    from data_processing.activations import append_index as real_append
+
+    def interrupted(path, entry):
+        if entry["id"] == "benign-2":
+            with path.open("ab") as handle:
+                handle.write(b'{"id":"benign-2"')
+            raise OSError("simulated interruption")
+        real_append(path, entry)
+
+    with (
+        patch("data_processing.activations.append_index", side_effect=interrupted),
+        pytest.raises(OSError, match="simulated interruption"),
+    ):
+        capture_activations(data, out_dir, **kwargs)
+    assert (out_dir / "shards/benign-2.safetensors").exists()
+    resumed = capture_activations(data, out_dir, **kwargs)
+    assert resumed["skipped"] == 1
+    assert resumed["captured"] == 3
+    assert len(read_index(out_dir)["shards"]) == 4
+
+
+def test_resume_migrates_legacy_index(tiny_lm, synthetic_dataset):
+    model, tokenizer = tiny_lm
+    data, _, out_dir = synthetic_dataset
+    kwargs = {"model": model, "tokenizer": tokenizer, "min_free_bytes": 0}
+    capture_activations(data, out_dir, **kwargs)
+    legacy = read_index(out_dir)
+    legacy["schema_version"] = 1
+    (out_dir / "index.json").write_text(json.dumps(legacy))
+    (out_dir / "index.jsonl").unlink()
+    with patch.object(model, "forward", wraps=model.forward) as forward:
+        resumed = capture_activations(data, out_dir, **kwargs)
+    assert forward.call_count == 0
+    assert resumed["skipped"] == 4
+    index = read_index(out_dir)
+    assert index["schema_version"] == 2
+    assert index["shards"] == legacy["shards"]
+
+
+def test_capture_does_not_rewrite_index_per_shard(tiny_lm, synthetic_dataset):
+    model, tokenizer = tiny_lm
+    data, _, out_dir = synthetic_dataset
+    with patch("data_processing.activations.atomic_write", wraps=atomic_write) as writes:
+        capture_activations(
+            data, out_dir, model=model, tokenizer=tokenizer, min_free_bytes=0,
+        )
+    headers = [call.args[1] for call in writes.call_args_list
+               if call.args[0].name == "index.json"]
+    assert len(headers) == 2  # Start and finish only, regardless of shard count.
+    assert all("shards" not in json.loads(header) for header in headers)

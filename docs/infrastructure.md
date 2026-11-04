@@ -43,11 +43,16 @@ uv run python -m data_processing.activations \
   hidden states of shape `(num_layers, seq_len, hidden_size)`. Every shard stores `last_token` and
   `mean_pooled` of shape `(num_layers, hidden_size)` in `fp16` (`--dtype`).
 - `--max-tokens` (default `512`) truncates longer tokenized inputs and records `truncated`,
-  `token_count`, and `raw_token_count` in both the shard `.safetensors` header and `index.json`.
-- Writes `shards/<id>.safetensors` and `index.json` atomically. Both the shard metadata header and
-  the index record `model_identity` (`repo_id`, `commit_hash`, `weights_sha256`), `tokenizer_version`,
-  `layers`, and `dtype`. Re-running skips IDs already present in `index.json` and refuses to append
-  if any identity field differs.
+  `token_count`, and `raw_token_count` in both the shard `.safetensors` header and `index.jsonl`.
+- Writes `shards/<id>.safetensors` atomically, then appends and syncs one record to `index.jsonl`.
+  `index.json` holds identity metadata and aggregate counts, written atomically at run start and
+  finish. During a run its status is `in_progress`; the JSONL records are authoritative for resume.
+  Both the shard metadata and index record `model_identity` (`repo_id`, `commit_hash`,
+  `weights_sha256`), `tokenizer_version`, `layers`, and `dtype`. Re-running validates shard checksums,
+  skips indexed IDs, and refuses identity mismatches. Resume discards an incomplete final JSONL line
+  and recaptures its shard. Old combined indexes are converted once on resume. Use one writer per
+  output directory. The CLI's `index_sha256` hashes the canonical JSON array of the header and JSONL
+  SHA-256 digests.
 - Checks free disk space on the target volume before starting and before writing each shard, stopping
   cleanly (`"status": "stopped_disk_limit"`) when free space would fall below `--min-free-gb`
   (default `20` GiB, or `--min-free-bytes`).

@@ -88,20 +88,40 @@ def run_metrics(runs):
 
 
 def run_fields(record):
-    result = {key: record.get(key) for key in ("agent", "mode", "ticket", "start", "exit")}
-    result["duration"] = None
-    try:
-        result["duration"] = (
-            dt.datetime.fromisoformat(record["end"]) - dt.datetime.fromisoformat(record["start"])
-        ).total_seconds()
-    except (KeyError, ValueError, TypeError):
-        pass
+    result = {key: record.get(key) for key in ("agent", "mode", "ticket", "start", "end", "exit")}
+    if not all(isinstance(result[key], str) for key in ("agent", "mode", "ticket", "start")):
+        raise ValueError("incomplete run")
+    start = dt.datetime.fromisoformat(result["start"])
+    end = dt.datetime.fromisoformat(result["end"]) if result["end"] else None
+    if start.utcoffset() is None or (end and (end.utcoffset() is None or end < start)):
+        raise ValueError("invalid run interval")
+    result["duration"] = (end - start).total_seconds() if end else None
     return result
 
 
-def state(board, runs=RUNS):
+def activity(history, running, titles, current):
+    agents = []
+    for agent in sorted({r["agent"] for r in history + running}):
+        live = next((r for r in running if r["agent"] == agent), None)
+        status, until = dispatch.agent_pause(agent, history, current)
+        agents.append({"agent": agent, "state": "running" if live else status,
+                       "until": until.isoformat() if until and not live else None,
+                       "ticket": live["ticket"] if live else None,
+                       "elapsed": max(0, (current - dt.datetime.fromisoformat(live["start"]))
+                                      .total_seconds()) if live else None})
+    # A dispatcher append/unlink can briefly leave the same run in both files.
+    completed = {(r["agent"], r["start"]) for r in history}
+    intervals = history + [r for r in running if (r["agent"], r["start"]) not in completed]
+    return {"now": current.isoformat(), "agents": agents,
+            "runs": [{**r, "title": titles.get(r["ticket"], "")} for r in intervals]}
+
+
+def state(board, runs=RUNS, current=None):
+    current = current or dispatch.now()
+    titles = {}
     columns = {status: [] for status in STATUSES}
     for ticket in dispatch.tickets(board / "tickets"):
+        titles[ticket.get("id")] = ticket.get("title", "")
         if ticket.get("status") in columns:
             columns[ticket["status"]].append(
                 {key: ticket.get(key, "") for key in ("id", "title", "owner", "priority")}
@@ -110,18 +130,21 @@ def state(board, runs=RUNS):
     for path in sorted((board / "running").glob("*.json")):
         try:
             running.append(run_fields(json.loads(path.read_text())))
-        except (OSError, ValueError):  # dispatcher may be writing this file
+        except (OSError, ValueError, TypeError, AttributeError):  # dispatcher may be writing this file
             continue
     history = []
     path = board / "runs.jsonl"
     if path.exists():
         for line in path.read_text().splitlines():
             try:
-                history.append(run_fields(json.loads(line)))
-            except ValueError:  # tolerate an incomplete append
+                record = run_fields(json.loads(line))
+                if record["end"]:
+                    history.append(record)
+            except (ValueError, TypeError, AttributeError):  # tolerate an incomplete append
                 continue
     return {"columns": columns, "counts": {k: len(v) for k, v in columns.items()},
-            "running": running, "history": history[::-1], "metrics": run_metrics(runs)}
+            "running": running, "history": history[::-1], "metrics": run_metrics(runs),
+            "activity": activity(history, running, titles, current)}
 
 
 def handler(board, runs=RUNS):
@@ -133,8 +156,8 @@ def handler(board, runs=RUNS):
             elif self.path in ("/", "/index.html"):
                 body = PAGE.read_bytes()
                 content_type = "text/html; charset=utf-8"
-            elif self.path == "/metrics.js":
-                body = PAGE.with_name("metrics.js").read_bytes()
+            elif self.path in ("/metrics.js", "/activity.js"):
+                body = PAGE.with_name(self.path[1:]).read_bytes()
                 content_type = "text/javascript; charset=utf-8"
             else:
                 self.send_error(404)

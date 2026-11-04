@@ -25,7 +25,7 @@ stage names). Its code must not read payload files.
 
 ## Look
 
-Clean and quiet. One page with tabs or sections, generous spacing, one typeface, readable at a glance.
+Clean and quiet. One static page with hash-routed views, generous spacing, one typeface, readable at a glance.
 Same color for the same metric across every chart; fixed semantic colors for TP, FP, FN, TN that are
 color-blind safe. Label lines directly instead of relying on legends. Light and dark themes.
 No 3D, gradients, or rainbow palettes.
@@ -34,7 +34,7 @@ No 3D, gradients, or rainbow palettes.
 
 Run `python3 dashboard/server.py` from the checkout (stdlib only). It binds to `0.0.0.0:8300`;
 use `--port` to change the port and `--board /path/to/board` to inspect another board.
-Open `/` for the page or `/api/state` for JSON. The page refreshes every 30 seconds and follows the
+Open `/` for the page or `/api/state` for JSON. The page refreshes every 15 seconds and follows the
 system theme, with a button to switch themes. It shows ticket headers, running agent records and
 completed agent history and aggregate run metrics. Duration is measured in seconds from the
 recorded start and end timestamps. Missing board files produce empty views; incomplete JSON records
@@ -69,3 +69,25 @@ Browser regression checks are optional, keeping runtime dependencies stdlib-only
 `uv run --with playwright python -m playwright install chromium`, then
 `uv run --with playwright pytest -q tests/test_dashboard_browser.py` (Chromium system libraries
 must be available). The regular suite tests synthetic manifest projection and HTTP routes.
+
+## Pages and agent activity
+
+The persistent navigation opens `#board` (tickets), `#activity` (agent timeline and history),
+`#runs` (manifest history and selected aggregate report), and `#metrics` (improvement charts).
+Reloading a deep link preserves the view. All displayed timestamps use America/Los_Angeles with
+PST/PDT labels, independent of browser and server timezone; files and API timestamps keep their
+recorded timezone.
+
+Activity reads only run metadata from `board/runs.jsonl`, `board/running/*.json` and ticket headers.
+Each discovered agent gets a directly labeled lane and a stable color, including future agent names.
+Bars show ticket/mode at their start, completed exit markers (ok or failed), and hover details with
+ticket title, duration and exit code. Running bars extend to the latest refresh time.
+The live window follows the last six hours; Earlier/Later pan by half a window, zoom buttons change
+its width (15 minutes to one year), and Live resets it. History windows stay fixed on refresh.
+Active hours count the union of each agent's intervals clipped to the visible window.
+
+State lines show running ticket and minutes, resting, capped until a Pacific timestamp, or idle.
+The dispatcher and dashboard share pause calculations, including minimum gaps, failed-run cooldowns
+and rolling run caps. Running records take precedence. State reflects dispatcher records, not a
+process probe, and can lag until dispatch reaps a finished process. No server lanes are built yet;
+those can be added alongside the agent chart later. Dense start tags can overlap at wide zoom levels.

@@ -2,6 +2,8 @@
 
 import argparse
 import hashlib
+import json
+import os
 import re
 import shutil
 import struct
@@ -20,14 +22,13 @@ def _import_ml():
         import torch
         import transformers
         from huggingface_hub import try_to_load_from_cache
-        from safetensors.torch import save
         from transformers import AutoModelForCausalLM, AutoTokenizer
         from transformers.utils import logging as hf_logging
     except ImportError as error:
         raise ValueError("torch, transformers, and safetensors are required for activations") from error
     hf_logging.set_verbosity_error()
     hf_logging.disable_progress_bar()
-    return torch, transformers, try_to_load_from_cache, save, AutoModelForCausalLM, AutoTokenizer
+    return torch, transformers, try_to_load_from_cache, AutoModelForCausalLM, AutoTokenizer
 
 
 def resolve_dtype(name, torch):
@@ -45,7 +46,7 @@ def resolve_dtype(name, torch):
 
 
 def load_model_and_tokenizer(model_name, revision=None, device="cpu"):
-    _, _, _, _, auto_model, auto_tokenizer = _import_ml()
+    _, _, _, auto_model, auto_tokenizer = _import_ml()
     try:
         tokenizer = auto_tokenizer.from_pretrained(
             model_name, revision=revision, local_files_only=True
@@ -62,7 +63,7 @@ def load_model_and_tokenizer(model_name, revision=None, device="cpu"):
 
 
 def weights_digest(model):
-    torch, _, _, _, _, _ = _import_ml()
+    torch, _, _, _, _ = _import_ml()
     result = hashlib.sha256()
     for name, tensor in sorted(model.state_dict().items()):
         array = tensor.detach().cpu().contiguous()
@@ -72,7 +73,7 @@ def weights_digest(model):
 
 
 def build_model_identity(model, model_name, revision=None):
-    _, _, try_to_load_from_cache, _, _, _ = _import_ml()
+    _, _, try_to_load_from_cache, _, _ = _import_ml()
     repo_id = str(model_name or getattr(model.config, "_name_or_path", "unknown"))
     commit_hash = revision or getattr(model.config, "_commit_hash", None)
     if not commit_hash:
@@ -91,7 +92,7 @@ def build_model_identity(model, model_name, revision=None):
 
 
 def build_tokenizer_version(tokenizer):
-    _, transformers, _, _, _, _ = _import_ml()
+    _, transformers, _, _, _ = _import_ml()
     vocab = tokenizer.get_vocab() if hasattr(tokenizer, "get_vocab") else {}
     payload = {
         "class": tokenizer.__class__.__name__,
@@ -205,8 +206,8 @@ def read_dataset(dataset, dataset_manifest=None):
 
 def validate_existing_index(index_path, output_dir, identity, tok_version, selected_layers, dtype_name):
     existing = load_json(index_path)
-    if not isinstance(existing, dict) or not isinstance(existing.get("shards"), dict):
-        raise ValueError("invalid activation index format")  # noqa: TRY004 - external JSON
+    if not isinstance(existing, dict) or existing.get("schema_version") not in (1, 2):
+        raise ValueError("invalid activation index format")
     checks = [
         ("model_identity", existing.get("model_identity"), identity),
         ("tokenizer_version", existing.get("tokenizer_version"), tok_version),
@@ -216,10 +217,35 @@ def validate_existing_index(index_path, output_dir, identity, tok_version, selec
     for name, found, expected in checks:
         if found != expected:
             raise ValueError(f"index {name} mismatch; refusing to append")
-    shards = {}
-    for prompt_id, entry in existing["shards"].items():
-        if not isinstance(entry, dict) or entry.get("id") != prompt_id:
+    entries_path = output_dir / "index.jsonl"
+    valid_bytes = 0
+    if existing["schema_version"] == 1:
+        if not isinstance(existing.get("shards"), dict):
+            raise ValueError("invalid activation index format")
+        entries = list(existing["shards"].values())
+        if any(not isinstance(entry, dict) or entry.get("id") != key
+               for key, entry in existing["shards"].items()):
             raise ValueError("invalid shard entry in index")
+    else:
+        entries = []
+        if entries_path.exists():
+            with entries_path.open("rb") as handle:
+                for line in handle:
+                    if not line.endswith(b"\n"):
+                        break  # An interrupted append is not committed; recapture its shard.
+                    try:
+                        entries.append(json.loads(line))
+                    except (ValueError, UnicodeDecodeError):
+                        raise ValueError("invalid shard entry in index") from None
+                    valid_bytes += len(line)
+        elif existing.get("records"):
+            raise ValueError("activation index.jsonl missing")
+    shards = {}
+    for entry in entries:
+        if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str)
+                or entry["id"] in shards):
+            raise ValueError("invalid shard entry in index")
+        prompt_id = entry["id"]
         for name, expected in (
             ("model_identity", identity),
             ("tokenizer_version", tok_version),
@@ -235,13 +261,29 @@ def validate_existing_index(index_path, output_dir, identity, tok_version, selec
         if not shard_path.is_file() or digest(shard_path) != entry.get("sha256"):
             raise ValueError("existing shard file missing or checksum mismatch")
         shards[prompt_id] = entry
+    if existing["schema_version"] == 1:
+        # One-time migration; replace the header only after all old entries are written.
+        atomic_write(entries_path, b"".join(
+            (canonical_json(entry) + "\n").encode("utf-8") for entry in entries
+        ))
+    elif entries_path.exists() and entries_path.stat().st_size != valid_bytes:
+        with entries_path.open("r+b") as handle:
+            handle.truncate(valid_bytes)
     return shards
+
+
+def append_index(index_path, entry):
+    data = (canonical_json(entry) + "\n").encode("utf-8")
+    with index_path.open("ab", buffering=0) as handle:
+        if handle.write(data) != len(data):
+            raise OSError("incomplete activation index append")
+        os.fsync(handle.fileno())
 
 
 def write_index(index_path, status, identity, tok_version, selected_layers, dtype_name,
                 hidden_size, max_tokens, shards):
     index = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": status,
         "model_identity": identity,
         "tokenizer_version": tok_version,
@@ -252,7 +294,6 @@ def write_index(index_path, status, identity, tok_version, selected_layers, dtyp
         "records": len(shards),
         "truncated_count": sum(1 for entry in shards.values() if entry["truncated"]),
         "per_token_count": sum(1 for entry in shards.values() if entry["has_per_token"]),
-        "shards": shards,
     }
     atomic_write(index_path, (canonical_json(index) + "\n").encode("utf-8"))
     return index
@@ -281,7 +322,7 @@ def capture_activations(
     min_free_bytes=None,
 ):
     """Capture last-token, mean-pooled, and sampled per-token hidden states into safetensors shards."""
-    torch, _, _, _, _, _ = _import_ml()
+    torch, _, _, _, _ = _import_ml()
     dataset = Path(dataset)
     output_dir = Path(output_dir)
     if dataset.resolve() == output_dir.resolve():
@@ -328,13 +369,21 @@ def capture_activations(
 
     shards_dir = output_dir / "shards"
     index_path = output_dir / "index.json"
+    entries_path = output_dir / "index.jsonl"
     shards = {}
     if index_path.exists():
         shards = validate_existing_index(
             index_path, output_dir, identity, tok_version, selected_layers, dtype_name
         )
 
+    if not index_path.exists() and entries_path.exists():
+        raise ValueError("activation index header missing; refusing to append")
     shards_dir.mkdir(parents=True, exist_ok=True)
+    write_index(
+        index_path, "in_progress", identity, tok_version,
+        selected_layers, dtype_name, hidden_size, max_tokens, shards,
+    )
+    entries_path.touch(exist_ok=True)
     captured = 0
     skipped = 0
     stopped_disk_limit = False
@@ -391,14 +440,9 @@ def capture_activations(
                 "truncated": "true" if truncated else "false",
             }
             shard_bytes = serialize_shard(torch, tensors, shard_meta)
-            if shutil.disk_usage(output_dir).free - len(shard_bytes) < limit_bytes:
-                stopped_disk_limit = True
-                break
-
             fname = shard_filename(prompt_id)
             shard_path = shards_dir / fname
-            atomic_write(shard_path, shard_bytes)
-            shards[prompt_id] = {
+            entry = {
                 "id": prompt_id,
                 "file": f"shards/{fname}",
                 "sha256": hashlib.sha256(shard_bytes).hexdigest(),
@@ -412,11 +456,14 @@ def capture_activations(
                 "layers": selected_layers,
                 "dtype": dtype_name,
             }
+            entry_bytes = len((canonical_json(entry) + "\n").encode("utf-8"))
+            if shutil.disk_usage(output_dir).free - len(shard_bytes) - entry_bytes < limit_bytes:
+                stopped_disk_limit = True
+                break
+            atomic_write(shard_path, shard_bytes)
+            append_index(entries_path, entry)
+            shards[prompt_id] = entry
             captured += 1
-            write_index(
-                index_path, "complete", identity, tok_version,
-                selected_layers, dtype_name, hidden_size, max_tokens, shards,
-            )
 
     status = "stopped_disk_limit" if stopped_disk_limit else "complete"
     index = write_index(
@@ -439,7 +486,9 @@ def capture_activations(
         "remaining": remaining,
         "truncated_count": index["truncated_count"],
         "per_token_count": index["per_token_count"],
-        "index_sha256": digest(index_path),
+        "index_sha256": hashlib.sha256(
+            canonical_json([digest(index_path), digest(entries_path)]).encode("utf-8")
+        ).hexdigest(),
     }
 
 

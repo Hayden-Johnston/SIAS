@@ -80,7 +80,13 @@ uv run ruff check                     # lint
 uv run python -m data_processing.normalize source.jsonl out.jsonl --manifest out.manifest.json
 
 # Capture hidden-state activations (needs `uv sync --extra activations`; CPU, resumable)
+# Writes per-prompt shards, an append-only index.jsonl, and an index.json summary
 uv run python -m data_processing.activations out.jsonl activations/dev --dataset-manifest out.manifest.json
+
+# Load an approved local snapshot (source names and selection rules: docs/datasets.md)
+uv run python -m data_processing.sources deepset data/raw/train.parquet \
+  --output data/normalized/deepset.jsonl --manifest data/normalized/deepset.manifest.json \
+  --revision SNAPSHOT_COMMIT --timestamp 2026-11-04T00:00:00Z
 
 # Replay a scored run from cached stage outputs
 uv run python -m data_processing.run data/run-config.json runs/experiment-1
@@ -88,12 +94,44 @@ uv run python -m data_processing.run data/run-config.json runs/experiment-1
 # Read-only inventory of GPUs, storage, model servers and models on disk
 uv run python ops/inventory.py
 
-# Dashboard (board, agent activity, run metrics) on http://localhost:8300
+# Dashboard (board, live agent timeline, runs and metrics; Pacific times) on http://localhost:8300
 python3 dashboard/server.py --port 8300
 ```
 
 Local settings live in files git ignores. Copy `config.example.json` to `config.local.json`
 and put API keys in `.env`.
+
+### Queued model calls
+
+`llm_proxy.Client` reads `MAYA_URL` (OpenAI API base URL ending in `/v1`) and
+`MAYA_API_KEY` from `.env`, with environment variables taking precedence. It only sends chat
+requests to an already running server.
+
+```python
+from llm_proxy import Client
+
+client = Client("caches/chat.sqlite")
+keys = client.submit_batch(
+    "served-model-id",
+    [[{"role": "user", "content": "Say hello."}]],
+    temperature=0, max_tokens=32,
+)
+client.drain()
+output = client.result(keys[0])
+```
+
+Use one database per server: drainers sharing it serialize HTTP calls at concurrency 1.
+Submission persists immediately; duplicate model, messages and generation parameters reuse the
+same key. `drain()` processes pending jobs in submission order and returns the number completed.
+`result(key)` returns status (`pending`, `done`, `failed`), response, attempts, error code and
+cumulative HTTP latency in seconds (excluding backoff), or `None` for an unknown key.
+Completed results replay without inference. Pin the model ID to the checkpoint when reusing a cache.
+
+Transport errors, HTTP 429 and HTTP 5xx retry up to three attempts per drain with 1s then 2s
+backoff; exhausted jobs remain pending for a later drain. Other HTTP errors, malformed responses
+and explicit refusals are marked failed and raise `ProxyError`, stopping the drain without retrying
+that job. A crash during an HTTP call can repeat that call on resume. Streaming is unsupported.
+The database contains request and response text: keep it local and outside git.
 
 ## Repository layout
 
@@ -141,6 +179,10 @@ log is in [reports/2026-11-04-dataset-approvals.md](reports/2026-11-04-dataset-a
 | [JailbreakBench/JBB-Behaviors](https://huggingface.co/datasets/JailbreakBench/JBB-Behaviors) | MIT | red-team seeds only |
 | [databricks/databricks-dolly-15k](https://huggingface.co/datasets/databricks/databricks-dolly-15k) | CC-BY-SA-3.0 | benign instructions |
 | [OpenAssistant/oasst2](https://huggingface.co/datasets/OpenAssistant/oasst2) | Apache-2.0 | benign multi-turn |
+
+Local loaders and measured import counts for these sources are documented in
+[reports/2026-11-04-source-loaders.md](reports/2026-11-04-source-loaders.md).
+JBB is catalogued as seeds only and contributes no scored rows. Imports still require evaluator review.
 
 No public source covers long context, documents, tool output, code comments or hard negatives well.
 Those come from the red team and must be approved by the evaluator. Generated data is published only

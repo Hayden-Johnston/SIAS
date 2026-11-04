@@ -204,22 +204,41 @@ def reap(agent):
     return False
 
 
-def resting(agent):
-    done = [r for r in runs() if r["agent"] == agent]
+def rest_until(agent, history):
+    done = [r for r in history if r["agent"] == agent]
     if not done:
-        return False
+        return None
     last = max(done, key=lambda r: r["end"])
-    wait = MIN_GAP[agent] if last["exit"] == 0 else FAIL_COOLDOWN
-    return now() - dt.datetime.fromisoformat(last["end"]) < wait
+    wait = MIN_GAP.get(agent, dt.timedelta(0)) if last["exit"] == 0 else FAIL_COOLDOWN
+    return dt.datetime.fromisoformat(last["end"]) + wait
+
+
+def agent_pause(agent, history, current):
+    """Dispatch eligibility, shared with the read-only dashboard."""
+    recent = sorted(dt.datetime.fromisoformat(r["start"]) for r in history
+                    if r["agent"] == agent
+                    and current - dt.datetime.fromisoformat(r["start"]) < WINDOW)
+    cap = MAX_RUNS_PER_WINDOW.get(agent)
+    until = recent[-cap] + WINDOW if cap and len(recent) >= cap else None
+    rest = rest_until(agent, history)
+    if until and until > current:
+        return "capped", max(until, rest) if rest else until
+    if rest and rest > current:
+        return "resting", rest
+    return "idle", None
+
+
+def resting(agent):
+    until = rest_until(agent, runs())
+    return until is not None and now() < until
 
 
 def tick():
     if (BOARD / "STOP").exists():
         return
     ts = tickets()
-    recent = [r for r in runs() if now() - dt.datetime.fromisoformat(r["start"]) < WINDOW]
-    capped = {a for a, cap in MAX_RUNS_PER_WINDOW.items() if sum(r["agent"] == a for r in recent) >= cap}
-    capped |= {a for a in MAX_RUNS_PER_WINDOW if resting(a)}
+    history, current = runs(), now()
+    capped = {a for a in MAX_RUNS_PER_WINDOW if agent_pause(a, history, current)[0] != "idle"}
 
     for worker in WORKERS:
         if not reap(worker) and worker not in capped:

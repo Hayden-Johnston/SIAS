@@ -77,5 +77,7 @@ For a typical 4B-class causal LM (`36` transformer layers, `hidden_size = 2560`)
 Prompts are processed sequentially (batch size 1) on CPU to avoid padding artifacts in
 mean-pooled states and to respect the rig GPU reservation rules. `index.json` is rewritten
 atomically as shards complete, which is simple and safe for dataset runs of thousands of
-prompts but scales linearly in index write I/O with total shard count. No probe training or
-detection stage integration is included in this step.
+prompts but makes total index write I/O quadratic in shard count. This limitation was
+subsequently removed by [ticket 0025](2026-11-04-activation-index-append-only.md), which uses
+an append-only JSONL index. No probe training or detection stage integration is included
+in this step.

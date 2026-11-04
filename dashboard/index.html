@@ -10,6 +10,8 @@
 :root[data-theme="dark"] { color-scheme: dark; --bg: #151a21; --card: #202731; --ink: #edf0f4; --muted: #adb8c5; --line: #445061; }
 * { box-sizing: border-box; } body { margin: 0 auto; padding: 2rem; max-width: 1500px; font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--ink); }
 header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; } h1 { font-size: 1.5rem; } h2 { font-size: 1.15rem; } h3 { font-size: 1rem; margin-top: 0; }
+[hidden] { display: none !important; } nav { position: sticky; top: 0; background: var(--bg); padding: .6rem 0; display: flex; gap: 1rem; z-index: 1; } nav a[aria-current="page"] { font-weight: bold; }
+.activity-plot { min-width: 850px; } .controls { display: flex; flex-wrap: wrap; gap: .5rem; }
 section { margin-top: 2.5rem; } button { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 5px; padding: .4rem .8rem; cursor: pointer; }
 #board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1rem; } .column { min-width: 0; } article { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; margin-bottom: .8rem; overflow-wrap: anywhere; }
 p { margin: .4rem 0; } .muted, small { color: var(--muted); } .table-wrap { overflow-x: auto; } table { width: 100%; border-collapse: collapse; text-align: left; } th, td { padding: .7rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -24,26 +26,45 @@ a { color: #0072b2; } .swatch { display: inline-block; width: .8rem; height: .8r
 @media (max-width: 450px) { #board { grid-template-columns: 1fr; } }
 </style>
 <header><h1>llm-security</h1><button id="theme" type="button">Toggle theme</button></header>
+<nav aria-label="Views"><a href="#board">Board</a><a href="#activity">Activity</a><a href="#runs">Runs</a><a href="#metrics">Metrics</a></nav>
 <p id="refresh" class="muted" role="status">Loading board…</p>
-<section><h2>Board</h2><div id="board"></div></section>
+<main data-page="board"><section><h2>Board</h2><div id="board"></div></section>
+</main>
+<main data-page="activity" hidden><section><h2>Agent activity</h2><div id="agent-states"></div>
+<div class="controls"><button id="earlier">← Earlier</button><button id="later">Later →</button><button id="zoom-in">Zoom in</button><button id="zoom-out">Zoom out</button><button id="live">Live · last 6 h</button></div>
+<p id="activity-window" class="muted"></p><div id="activity-chart" class="table-wrap"></div></section>
 <section><h2>Running agents</h2><div id="running"></div></section>
 <section><h2>Agent run history</h2><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Mode</th><th>Ticket</th><th>Start</th><th>Duration</th><th>Exit</th></tr></thead><tbody id="history"></tbody></table></div><p id="no-history" class="muted"></p></section>
-<section><h2>Run history</h2><p id="no-runs" class="muted"></p>
-<div class="table-wrap"><table><thead><tr><th>Run / report</th><th>Timestamp (UTC)</th><th>Iteration</th><th>Pipeline</th><th>Dataset / split</th><th>Records</th><th>Detection (95% CI; n)</th><th>False positives (95% CI; n)</th></tr></thead><tbody id="metrics-history"></tbody></table></div></section>
-<section><h2>Improvement over time</h2>
-<p class="muted">95% confidence bands from manifests. Detection uses a log distance from 100%; false positives use a log rate. Exact zero errors and interval bounds are clipped at 0.00001% error for display. Dashed lines mark targets; labels mark each iteration and pipeline version.</p>
-<div class="charts"><article id="detection-chart"></article><article id="fp-chart"></article></div></section>
+</main>
+<main data-page="runs" hidden><section><h2>Run history</h2><p id="no-runs" class="muted"></p>
+<div class="table-wrap"><table><thead><tr><th>Run / report</th><th>Timestamp (Pacific)</th><th>Iteration</th><th>Pipeline</th><th>Dataset / split</th><th>Records</th><th>Detection (95% CI; n)</th><th>False positives (95% CI; n)</th></tr></thead><tbody id="metrics-history"></tbody></table></div></section>
 <section id="run-report"><h2>Run report</h2><label for="selected-run">Select run </label><select id="selected-run"></select>
 <p id="run-summary"></p><p id="distribution" class="muted"></p>
 <div class="charts"><article><h3>Outcomes</h3><div id="outcome"></div><div id="outcome-counts"></div></article>
 <article><h3>Per-stage counts and latency</h3><p class="muted">Latency is cached scoring time, not dashboard or replay time. Counts include attacks and benign prompts.</p><div class="table-wrap"><table><thead><tr><th>Stage / version</th><th>Reached</th><th>Caught</th><th>Passed</th><th>Total ms</th><th>Mean ms</th></tr></thead><tbody id="stages"></tbody></table></div></article></div></section>
+</main>
+<main data-page="metrics" hidden><section><h2>Improvement over time</h2>
+<p class="muted">95% confidence bands from manifests. Detection uses a log distance from 100%; false positives use a log rate. Exact zero errors and interval bounds are clipped at 0.00001% error for display. Dashed lines mark targets; labels mark each iteration and pipeline version.</p>
+<div class="charts"><article id="detection-chart"></article><article id="fp-chart"></article></div></section>
+</main>
 <script src="/metrics.js"></script>
+<script src="/activity.js"></script>
 <script>
 const el = (tag, value, className) => { const node = document.createElement(tag); if (value !== undefined) node.textContent = value; if (className) node.className = className; return node; };
 document.querySelector('#theme').onclick = () => {
   const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
   document.documentElement.dataset.theme = dark ? 'light' : 'dark';
 };
+function route() {
+  const hash = location.hash.slice(1) || 'board';
+  const view = hash === 'run-report' ? 'runs' : ['board', 'activity', 'runs', 'metrics'].includes(hash) ? hash : 'board';
+  for (const page of document.querySelectorAll('[data-page]')) page.hidden = page.dataset.page !== view;
+  for (const link of document.querySelectorAll('nav a')) {
+    if (link.hash === `#${view}`) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  }
+}
+addEventListener('hashchange', route); route();
 async function refresh() {
   try {
     const response = await fetch('/api/state');
@@ -59,19 +80,20 @@ async function refresh() {
       board.append(column);
     }
     const running = document.querySelector('#running'); running.replaceChildren();
-    for (const run of data.running) running.append(el('article', `${run.agent} · ${run.mode} · ticket ${run.ticket} · started ${run.start}`));
+    for (const run of data.running) running.append(el('article', `${run.agent} · ${run.mode} · ticket ${run.ticket} · started ${pacific(run.start)}`));
     if (!data.running.length) running.append(el('p', 'No agents running', 'muted'));
     const history = document.querySelector('#history'); history.replaceChildren();
     for (const run of data.history) {
       const row = el('tr');
-      for (const value of [run.agent, run.mode, run.ticket, run.start, run.duration == null ? '—' : `${run.duration.toFixed(1)} s`, run.exit ?? '—']) row.append(el('td', value));
+      for (const value of [run.agent, run.mode, run.ticket, pacific(run.start), run.duration == null ? '—' : `${run.duration.toFixed(1)} s`, run.exit ?? '—']) row.append(el('td', value));
       history.append(row);
     }
     document.querySelector('#no-history').textContent = data.history.length ? '' : 'No completed agent runs';
     renderMetrics(data.metrics);
-    document.querySelector('#refresh').textContent = `Updated ${new Date().toLocaleTimeString()} · refreshes every 30 seconds`;
-  } catch { document.querySelector('#refresh').textContent = 'Unable to refresh. Retrying in 30 seconds.'; }
+    renderActivity(data.activity);
+    document.querySelector('#refresh').textContent = `Updated ${pacific(new Date())} · refreshes every 15 seconds`;
+  } catch { document.querySelector('#refresh').textContent = 'Unable to refresh. Retrying in 15 seconds.'; }
 }
-refresh(); setInterval(refresh, 30000);
+refresh(); setInterval(refresh, 15000);
 </script>
 </html>
