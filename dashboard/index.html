@@ -2,7 +2,7 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>llm-security · Board</title>
+<title>llm-security · Dashboard</title>
 <style>
 :root { color-scheme: light dark; --bg: #f7f8fa; --card: #fff; --ink: #202936; --muted: #586575; --line: #d4dae2; }
 @media (prefers-color-scheme: dark) { :root { --bg: #151a21; --card: #202731; --ink: #edf0f4; --muted: #adb8c5; --line: #445061; } }
@@ -13,6 +13,13 @@ header { display: flex; justify-content: space-between; align-items: center; gap
 section { margin-top: 2.5rem; } button { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 5px; padding: .4rem .8rem; cursor: pointer; }
 #board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1rem; } .column { min-width: 0; } article { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; margin-bottom: .8rem; overflow-wrap: anywhere; }
 p { margin: .4rem 0; } .muted, small { color: var(--muted); } .table-wrap { overflow-x: auto; } table { width: 100%; border-collapse: collapse; text-align: left; } th, td { padding: .7rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 1rem; }
+svg { width: 100%; height: auto; } svg text { fill: var(--ink); font: 12px system-ui, sans-serif; }
+select { font: inherit; max-width: 100%; color: inherit; background: var(--card); padding: .4rem; }
+a { color: #0072b2; } .swatch { display: inline-block; width: .8rem; height: .8rem; margin-right: .5rem; }
+.charts article { min-width: 0; overflow-x: auto; } .rate-plot { min-width: 600px; }
+.metric-rate { white-space: normal; min-width: 13rem; }
+#outcome { max-width: 280px; } #distribution { overflow-wrap: anywhere; }
 @media (max-width: 850px) { #board { grid-template-columns: repeat(2, minmax(0, 1fr)); } body { padding: 1rem; } }
 @media (max-width: 450px) { #board { grid-template-columns: 1fr; } }
 </style>
@@ -21,7 +28,16 @@ p { margin: .4rem 0; } .muted, small { color: var(--muted); } .table-wrap { over
 <section><h2>Board</h2><div id="board"></div></section>
 <section><h2>Running agents</h2><div id="running"></div></section>
 <section><h2>Agent run history</h2><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Mode</th><th>Ticket</th><th>Start</th><th>Duration</th><th>Exit</th></tr></thead><tbody id="history"></tbody></table></div><p id="no-history" class="muted"></p></section>
-<section><h2>Run metrics</h2><p class="muted">Run manifest metrics will appear here in a later version.</p></section>
+<section><h2>Run history</h2><p id="no-runs" class="muted"></p>
+<div class="table-wrap"><table><thead><tr><th>Run / report</th><th>Timestamp (UTC)</th><th>Iteration</th><th>Pipeline</th><th>Dataset / split</th><th>Records</th><th>Detection (95% CI; n)</th><th>False positives (95% CI; n)</th></tr></thead><tbody id="metrics-history"></tbody></table></div></section>
+<section><h2>Improvement over time</h2>
+<p class="muted">95% confidence bands from manifests. Detection uses a log distance from 100%; false positives use a log rate. Exact zero errors and interval bounds are clipped at 0.00001% error for display. Dashed lines mark targets; labels mark each iteration and pipeline version.</p>
+<div class="charts"><article id="detection-chart"></article><article id="fp-chart"></article></div></section>
+<section id="run-report"><h2>Run report</h2><label for="selected-run">Select run </label><select id="selected-run"></select>
+<p id="run-summary"></p><p id="distribution" class="muted"></p>
+<div class="charts"><article><h3>Outcomes</h3><div id="outcome"></div><div id="outcome-counts"></div></article>
+<article><h3>Per-stage counts and latency</h3><p class="muted">Latency is cached scoring time, not dashboard or replay time. Counts include attacks and benign prompts.</p><div class="table-wrap"><table><thead><tr><th>Stage / version</th><th>Reached</th><th>Caught</th><th>Passed</th><th>Total ms</th><th>Mean ms</th></tr></thead><tbody id="stages"></tbody></table></div></article></div></section>
+<script src="/metrics.js"></script>
 <script>
 const el = (tag, value, className) => { const node = document.createElement(tag); if (value !== undefined) node.textContent = value; if (className) node.className = className; return node; };
 document.querySelector('#theme').onclick = () => {
@@ -52,6 +68,7 @@ async function refresh() {
       history.append(row);
     }
     document.querySelector('#no-history').textContent = data.history.length ? '' : 'No completed agent runs';
+    renderMetrics(data.metrics);
     document.querySelector('#refresh').textContent = `Updated ${new Date().toLocaleTimeString()} · refreshes every 30 seconds`;
   } catch { document.querySelector('#refresh').textContent = 'Unable to refresh. Retrying in 30 seconds.'; }
 }
