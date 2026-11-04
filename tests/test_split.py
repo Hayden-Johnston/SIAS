@@ -256,6 +256,11 @@ class SplitTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(KeyError):
                 self.run_split()
 
+    def test_empty_input_yields_zero_records(self):
+        self.write_input([])
+        result = self.run_split()
+        self.assertEqual(sum(s["records"] for s in result["splits"].values()), 0)
+
     def test_duplicate_ids_are_allowed(self):
         # split() does not check for duplicate ids; both rows are processed.
         rows = [
