@@ -46,6 +46,47 @@ A score greater than or equal to a stage's threshold catches the prompt and stop
 Later stages need no cache entry for prompts caught earlier. Missing a score for a reached stage
 fails the run; it does not implicitly download data, run a model, or mark the prompt benign.
 
+## Producing a rule/NLP cache
+
+```sh
+uv run python -m data_processing.rules \
+  /mnt/storage/llm_security/normalized/dev.jsonl \
+  /mnt/storage/llm_security/cache/dev-rules.jsonl \
+  --dataset-manifest /mnt/storage/llm_security/normalized/dev.manifest.json
+```
+
+The CLI checks the schema-v2 normalization manifest's checksum and row count, validates
+records and unique IDs, then atomically replaces the cache. Validation failure preserves
+an existing cache. Inputs must remain unchanged during production; use one writer per cache.
+It prints only an aggregate summary with the cache/dataset hashes, producer `version`, score
+min/max/mean, and total/mean latency. Copy `version` and `cache_sha256` into a replay stage
+and set `cache` to its path. The version hashes the producer file containing all rules and
+fixed settings. No model or network client is used.
+
+Rules and the scoring function live in `src/data_processing/rules.py`. The stage performs
+NFKC, case folding, removal of Unicode format characters (including zero-width characters),
+and a small explicit Greek/Cyrillic homoglyph mapping on a temporary copy. The dataset
+normalizer preserves text; these detection transformations do not change dataset bytes.
+An imperative override verb within four intervening tokens of an instruction target scores
+1.0; role/chat delimiter markers score 0.75; encoding indicators score 0.25; no match scores
+0.0. The highest matching score wins. These are ordinal heuristic strengths, not calibrated
+probabilities. The example threshold 0.5 catches override/role markers, not encoding alone.
+Encoding rules detect base64 mentions or long base64-like strings, percent/hex/Unicode escape
+runs, and hex literals; they do not decode content. Minimum run lengths are documented next
+to the expressions to avoid flagging individual escapes and short identifiers.
+
+Multi-turn rows score each content string independently and take the maximum, without treating
+JSON role metadata as spoofing. Latency uses a monotonic clock and covers content extraction,
+transformations and matching per row; it excludes dataset validation and disk I/O. Re-running
+preserves scores and order, while new latency measurements change cache bytes and hashes.
+Reuse the existing pinned cache for byte-identical replay. Cache production retains scores
+and IDs in memory, proportional to dataset size.
+
+This baseline can flag benign quotations and technical documents and miss paraphrases,
+other languages, encoded instructions, and instructions spread across turns. It has no
+contextual intent classifier, chunk/location output, evaluator approval, or tuned threshold.
+Measure it on approved development data before treating it as a detection control.
+
 ## Run files
 
 - `results.jsonl`: prompt IDs, labels/families, each reached stage's score and cached latency,
