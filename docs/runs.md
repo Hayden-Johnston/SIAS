@@ -46,6 +46,44 @@ A score greater than or equal to a stage's threshold catches the prompt and stop
 Later stages need no cache entry for prompts caught earlier. Missing a score for a reached stage
 fails the run; it does not implicitly download data, run a model, or mark the prompt benign.
 
+## Chunk caches and location
+
+A stage may add both `"chunk_chars": 4096` and `"overlap_chars": 512` (example sizes,
+not tuned defaults). Both must be integers with `chunk_chars > overlap_chars >= 0`.
+Omitting both keeps the existing row-cache contract, including rule/NLP caches.
+A chunk stage instead requires exactly `id`, `turn`, `start`, `score`, `latency_ms` per
+cache entry. Coordinates are Python Unicode character offsets into the original turn;
+non-multi-turn rows use turn 0. Chunk ends are derived, not stored in the cache.
+
+Each turn advances by `chunk_chars - overlap_chars`, with the final window aligned to
+the turn end, without duplicate starts. A short or empty turn has one window at start 0.
+No chunk crosses turns. Every chunk of a reached row must have a score, even if an early
+chunk exceeds the threshold. Unknown coordinates and duplicate keys fail validation.
+Later cascade stages still need no scores for rows caught earlier. The row's stage score
+is its maximum chunk score; stage latency sums all that row's chunk latencies.
+Single-chunk scores therefore preserve the existing row detection metrics.
+
+Results include channel and length bucket, plus each chunk stage's `best_chunk`
+`[turn, start, end]`, `located`, and `spans_longer_than_overlap`. Tied scores select the
+first chunk in turn/start order, independent of cache line order. `located` is true when
+the best chunk intersects any known span, even below the detection threshold. It is null
+for benign rows and attacks with unknown spans. Text, turn lengths and source spans are
+not written to results.
+
+Each chunk stage in the manifest records both window settings, location rates overall,
+`by_channel` and `by_length_bucket`, and a count of spans longer than its overlap. These
+statistics cover **reached rows**; the location denominator is reached attack rows with
+non-null spans (including an empty known list, which cannot be located). Each rate uses
+the same Wilson interval and sample size contract as detection. Only observed location
+groups are included. Row-cache stages have no location statistics. Location is reported
+per stage so scores from different classifiers are never compared.
+
+Length buckets are `0-4096`, `4097-16384`, and `16385+` Unicode characters: fixed short,
+medium and long bands at 4 Ki and 16 Ki characters, independent of stage window sizes.
+For multi-turn rows, length sums message content lengths and excludes JSON/role metadata.
+The manifest identity binds window configuration and runner version 2. Replay still uses
+only supplied caches and never performs inference.
+
 ## Producing a rule/NLP cache
 
 ```sh
@@ -92,7 +130,7 @@ Measure it on approved development data before treating it as a detection contro
 - `results.jsonl`: prompt IDs, labels/families, each reached stage's score and cached latency,
   and final detection. It contains no text.
 - `manifest.json`: completion marker with `identity_sha256` binding the config, runner version,
-  dataset, manifest, cache hashes, and thresholds; `results_sha256` pins the results bytes.
+  dataset, manifest, cache hashes, thresholds, and chunk settings; `results_sha256` pins the results bytes.
   It includes outcome counts, rates, confidence intervals, attack distribution, stage score
   summaries, caught/passed counts, and cached latency totals/means. No payload text or local paths.
 
@@ -107,8 +145,8 @@ A missing manifest or mismatched checksum indicates an incomplete or stale pair;
 it. Power-loss durability is not guaranteed because writes do not use fsync.
 
 The implementation loads record metadata, score caches, and results into memory; test memory
-limits before large multi-stage runs. Raw text is discarded from each dataset row before results
-are retained. Missing cache scores require building a corrected cache/config before replay.
+limits before large multi-stage runs. Only turn lengths and span coordinates are retained from
+each dataset row; payload text is discarded before scoring. Missing cache scores require building a corrected cache/config before replay.
 
 ## Metrics and dataset authority
 
@@ -125,6 +163,6 @@ datasets and establish family/group isolation, deduplication, label quality, and
 Do not treat unapproved fixture runs as evidence for merging detection controls. Dataset approval
 here is a provenance declaration, not a cryptographic attestation or an access-control mechanism.
 
-Stage latency is the original cached latency summed over reached prompts, not the time to replay
-scores, and includes no claim about server loading, queue time, or current end-to-end inference.
+Stage latency is the original cached latency summed over reached prompts (all chunks for chunk
+stages), not the time to replay scores, and includes no claim about server loading, queue time, or current end-to-end inference.
 The dashboard can read aggregate `manifest.json`; it must not read normalized payload files.

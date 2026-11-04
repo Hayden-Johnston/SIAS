@@ -78,6 +78,31 @@ def metrics(results):
     }
 
 
+def windows(length, chunk_chars, overlap_chars):
+    """End-aligned windows in turn order, including one window for an empty turn."""
+    last = max(0, length - chunk_chars)
+    starts = list(range(0, last, chunk_chars - overlap_chars)) + [last]
+    return [(start, min(start + chunk_chars, length)) for start in starts]
+
+
+def length_bucket(length):
+    # Character counts: short (4 Ki), medium (16 Ki), and long contexts.
+    return "0-4096" if length <= 4096 else "4097-16384" if length <= 16384 else "16385+"
+
+
+def location_metrics(rows):
+    known = [row for row in rows if row["located"] is not None]
+
+    def summary(group):
+        return rate(sum(row["located"] for row in group), len(group))
+
+    return {"overall": summary(known), **{
+        "by_" + field: {value: summary([row for row in known if row[field] == value])
+                        for value in sorted({row[field] for row in known})}
+        for field in ("channel", "length_bucket")
+    }}
+
+
 def number(value, name, maximum=None):
     if (type(value) not in (int, float) or not math.isfinite(value) or value < 0
             or (maximum is not None and value > maximum)):
@@ -111,6 +136,7 @@ def prepare(config_path):
             or dataset_manifest.get("output_sha256") != digest(dataset_path)):
         raise ValueError("dataset manifest version/checksum mismatch; schema version 2 required")
     rows, ids = [], set()
+    row_by_id = {}
     for line, row in read_rows(dataset_path):
         try:
             row = validate_record(row)
@@ -120,14 +146,26 @@ def prepare(config_path):
             raise ValueError("duplicate dataset id")
         ids.add(row["id"])
         # Discard payload text before retaining results or reporting.
-        rows.append({key: row[key] for key in ("id", "label", "attack_family")})
+        turns = ([message["content"] for message in json.loads(row["text"])]
+                 if row["channel"] == "multi_turn" else [row["text"]])
+        metadata = {key: row[key] for key in ("id", "label", "attack_family", "channel", "spans")}
+        metadata["turn_lengths"] = [len(turn) for turn in turns]
+        metadata["length_bucket"] = length_bucket(sum(metadata["turn_lengths"]))
+        rows.append(metadata)
+        row_by_id[row["id"]] = metadata
     if dataset_manifest.get("records") != len(rows):
         raise ValueError("dataset manifest record count mismatch")
     stages, cache_paths, names = [], [], set()
     for stage in config["stages"]:
         fields = {"name", "version", "threshold", "cache", "cache_sha256"}
-        if not isinstance(stage, dict) or set(stage) != fields:
+        chunk_fields = {"chunk_chars", "overlap_chars"}
+        if not isinstance(stage, dict) or set(stage) not in (fields, fields | chunk_fields):
             raise ValueError("stage must contain exactly the documented fields")
+        if "chunk_chars" in stage and (
+                type(stage["chunk_chars"]) is not int or stage["chunk_chars"] <= 0
+                or type(stage["overlap_chars"]) is not int
+                or not 0 <= stage["overlap_chars"] < stage["chunk_chars"]):
+            raise ValueError("require integer chunk_chars > overlap_chars >= 0")
         for field in fields - {"threshold"}:
             if not isinstance(stage[field], str) or not stage[field].strip():
                 raise ValueError(f"stage {field} must be a nonempty string")
@@ -141,18 +179,32 @@ def prepare(config_path):
         cache_paths.append(cache_path.resolve())
         cache = {}
         for line, entry in read_rows(cache_path):
-            if not isinstance(entry, dict) or set(entry) != {"id", "score", "latency_ms"}:
+            entry_fields = {"id", "score", "latency_ms"}
+            if "chunk_chars" in stage:
+                entry_fields |= {"turn", "start"}
+            if not isinstance(entry, dict) or set(entry) != entry_fields:
                 raise ValueError(f"cache line {line}: invalid fields")
             if not isinstance(entry["id"], str) or entry["id"] not in ids:
                 raise ValueError(f"cache line {line}: unknown dataset id")
-            if entry["id"] in cache:
-                raise ValueError(f"cache line {line}: duplicate id")
+            key = entry["id"]
+            if "chunk_chars" in stage:
+                lengths = row_by_id[key]["turn_lengths"]
+                turn, start = entry["turn"], entry["start"]
+                if (type(turn) is not int or type(start) is not int
+                        or not 0 <= turn < len(lengths)
+                        or not (start == max(0, lengths[turn] - stage["chunk_chars"])
+                                or (0 <= start < lengths[turn] - stage["chunk_chars"]
+                                    and start % (stage["chunk_chars"] - stage["overlap_chars"]) == 0))):
+                    raise ValueError(f"cache line {line}: invalid chunk coordinates")
+                key = (key, turn, start)
+            if key in cache:
+                raise ValueError(f"cache line {line}: duplicate id/chunk")
             number(entry["score"], "score", 1)
             number(entry["latency_ms"], "latency_ms")
-            cache[entry["id"]] = entry
+            cache[key] = entry
         stages.append((stage, cache))
     identity = {
-        "runner_version": 1, "config": config,
+        "runner_version": 2, "config": config,
         "dataset_sha256": dataset_manifest["output_sha256"],
         "dataset_manifest_sha256": digest(dataset_manifest_path),
     }
@@ -164,15 +216,34 @@ def prepare(config_path):
 def evaluate(row, stages):
     scores, detected = [], False
     for stage, cache in stages:
-        if row["id"] not in cache:
+        if "chunk_chars" in stage:
+            chunks = [(turn, start, end)
+                      for turn, length in enumerate(row["turn_lengths"])
+                      for start, end in windows(length, stage["chunk_chars"], stage["overlap_chars"])]
+            keys = [(row["id"], turn, start) for turn, start, _ in chunks]
+        else:
+            keys = [row["id"]]
+        if any(key not in cache for key in keys):
             raise ValueError("missing required cached score; run inference separately")
-        entry = cache[row["id"]]
-        detected = entry["score"] >= stage["threshold"]
-        scores.append({"stage": stage["name"], "score": entry["score"],
-                       "latency_ms": entry["latency_ms"], "detected": detected})
+        entries = [cache[key] for key in keys]
+        best = max(range(len(entries)), key=lambda index: entries[index]["score"])
+        score = entries[best]["score"]
+        detected = score >= stage["threshold"]
+        result = {"stage": stage["name"], "score": score,
+                  "latency_ms": sum(entry["latency_ms"] for entry in entries), "detected": detected}
+        if "chunk_chars" in stage:
+            turn, start, end = chunks[best]
+            result["best_chunk"] = [turn, start, end]
+            result["located"] = (any(t == turn and start < b and a < end
+                                     for t, a, b in row["spans"])
+                                 if row["label"] == 1 and row["spans"] is not None else None)
+            result["spans_longer_than_overlap"] = sum(
+                b - a > stage["overlap_chars"] for _, a, b in (row["spans"] or []))
+        scores.append(result)
         if detected:
             break
-    return row | {"detected": detected, "stages": scores}
+    metadata = {key: value for key, value in row.items() if key not in {"spans", "turn_lengths"}}
+    return metadata | {"detected": detected, "stages": scores}
 
 
 def replay(config_path, run_directory):
@@ -189,7 +260,16 @@ def replay(config_path, run_directory):
         reached = [entry for row in results for entry in row["stages"]
                    if entry["stage"] == stage["name"]]
         latency = sum(entry["latency_ms"] for entry in reached)
-        stage_results.append({"name": stage["name"], "version": stage["version"],
+        location = {}
+        if "chunk_chars" in stage:
+            location = {"chunk_chars": stage["chunk_chars"], "overlap_chars": stage["overlap_chars"],
+                        "location": location_metrics([
+                            entry | {"channel": row["channel"], "length_bucket": row["length_bucket"]}
+                            for row in results for entry in row["stages"]
+                            if entry["stage"] == stage["name"]]),
+                        "spans_longer_than_overlap": sum(
+                            entry["spans_longer_than_overlap"] for entry in reached)}
+        stage_results.append(location | {"name": stage["name"], "version": stage["version"],
                               "threshold": stage["threshold"], "reached": len(reached),
                               "caught": sum(entry["detected"] for entry in reached),
                               "passed": sum(not entry["detected"] for entry in reached),
