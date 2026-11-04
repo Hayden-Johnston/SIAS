@@ -35,6 +35,88 @@ This command normalizes the data schema. It does not perform detection-stage Uni
 transformations, classify prompts, approve labels, deduplicate near matches, or assign splits.
 The existing prototype `DataHandler` is unchanged; it still uses its original online loader.
 
+## Attack taxonomy and schema version 2 (specified, not yet implemented)
+
+Version 1 records one free-text `attack_family`. That cannot answer "which delivery channels and
+techniques do we miss?" or "where in a long context is the attack?". Version 2 adds three fields and
+keeps every version 1 contract above. The normalizer still accepts only one version per file; the
+manifest records `schema_version: 2` and adds `channels` and `techniques` counts.
+
+| Field | Contract |
+|---|---|
+| `channel` | One value from the channel table. Applies to benign rows too (a benign email is `email`). |
+| `techniques` | Sorted, unique list of values from the technique table. Empty if and only if `label` is `0`. |
+| `spans` | Where the attack is: list of `[turn, start, end]`, or `null` when unknown. Must be `[]` for benign rows. |
+
+**Channel**: where the text reaches the model. One per row.
+
+| Value | Meaning |
+|---|---|
+| `direct` | A single user message. |
+| `multi_turn` | A conversation; the attack is built up or split across user turns. |
+| `document` | Pasted or retrieved document content (RAG, file upload). |
+| `email` | An email body or headers the model reads on someone's behalf. |
+| `tool_output` | Tool call results, web pages, search results, API responses. |
+| `code_comment` | Comments, docstrings or strings inside code the model reads. |
+
+Long context is not a channel: a long email and a long document are both long context, and a channel
+field cannot hold both. Length is derived from `text` at report time and bucketed there, so results can
+be cut by channel and by length independently.
+
+**Technique**: how the attack works. Many attacks combine techniques, so this is a list.
+
+| Value | Meaning |
+|---|---|
+| `override` | Tells the model to ignore, replace or reveal its instructions. |
+| `roleplay` | Persona, fiction or hypothetical framing to step outside the rules. |
+| `encoding` | Encoded, obfuscated or translated text: base64, ciphers, homoglyphs, zero-width, other languages. |
+| `delimiter_spoof` | Fake system/role markers, chat-template tokens or end-of-data delimiters. |
+| `payload_split` | The instruction is split into parts that are harmless alone (variables, turns, documents). |
+| `many_shot` | Many fabricated example exchanges that prime compliance. |
+| `named_jailbreak` | A known published jailbreak; `attack_family` holds its name. |
+| `novel` | None of the above. The evaluator reviews `novel` rows; a recurring pattern becomes a new value in a schema version bump. |
+
+Rules that tie the fields together:
+
+- `attack_family` stays the split unit: a specific family (a named jailbreak, one generator template,
+  one public source's category), finer than a technique. Benign rows use a benign family name, for
+  example `benign-chat` or `benign-quoted-attack` for security text that quotes an attack.
+- `techniques` describes the attack as it appears in this row's text. An `obfuscated` attack variant
+  therefore includes `encoding`; its `plain` sibling in the same `group_id` may not.
+- Hard negatives (benign text that quotes or discusses an attack) are `label: 0`, `techniques: []`,
+  `spans: []`. The label describes whether the text attacks the model reading it.
+- Public sources rarely say which techniques an item uses or where it is. Their loader must map what the
+  source states and use `novel` and `spans: null` otherwise; it must not guess. The evaluator may
+  refine these fields later and records that in `label_source`.
+
+**Multi-turn text.** For `channel: multi_turn`, `text` is a JSON array of
+`{"role": "user" | "assistant", "content": string}` objects, compact and in order. All other channels
+use plain text. Keeping one `text` field keeps hashing, IDs and normalization unchanged.
+
+**Spans.** `turn` is the index into the message array for `multi_turn` rows and `0` otherwise.
+`start` and `end` are Python string (Unicode code point) offsets into that turn's text, end exclusive,
+with `0 <= start < end <= len`. Spans are sorted and do not overlap. A short direct attack that is the
+whole text is `[[0, 0, len(text)]]`. Generators know where they inserted an attack and must record it;
+an attack row with `null` spans is excluded from location metrics, not from detection metrics.
+
+## Long contexts: chunking and location
+
+Chunking is part of a scoring run, not of the dataset. Datasets keep the full text and spans; chunks
+are derived from them deterministically, so no chunk files are stored and a run can be replayed.
+
+- Each turn is chunked on its own; a chunk never crosses a turn boundary.
+- Chunks are fixed windows of `chunk_chars` characters that advance by `chunk_chars - overlap_chars`.
+  The last window is aligned to the end of the turn. Turns no longer than `chunk_chars` are one chunk.
+  Both values are per-stage run configuration recorded in the run manifest, chosen to fit the stage
+  model's input limit and tuned by measurement in `docs/pipeline.md`.
+- A chunk is positive if it intersects any span. A span longer than `overlap_chars` can never fit
+  entirely in one chunk; the run manifest reports how many such spans there are.
+- Row score is the maximum chunk score, so row-level detection and false-positive metrics are
+  unchanged by chunking. Chunk scores are cached per `(row id, turn, start)` with the existing per-row
+  score cache.
+- Location: an attack row is located if its highest-scoring chunk is positive. Location rate is
+  reported over attack rows with known spans, by channel and length bucket.
+
 ## Normalizing a source
 
 Normalize local JSONL without downloading data, contacting a model, or changing text:
@@ -86,6 +168,10 @@ reports; do not inspect or display raw prompt corpora.
 ## Splits and hygiene
 
 - Split by **attack family**, not randomly. All variants of a pair stay in the same split.
+- Assignment is deterministic: a split config lists held-out attack families explicitly; other attack
+  families and all benign `group_id`s are assigned by a hash of the name, so adding data never moves
+  existing rows. Each split reports its counts by channel and technique, so a gap (no `email` attacks
+  in held-out, say) is visible before any number is quoted.
 - Dedupe near-duplicates before splitting.
 - Keep a held-out set that is never used for tuning.
 - The evaluator approves items into datasets and tracks label source. Only datasets marked publishable
