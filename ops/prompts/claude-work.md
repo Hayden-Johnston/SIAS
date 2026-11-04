@@ -1,4 +1,4 @@
-You are Claude, architect and integrator on llm-security, running unattended from the dispatcher.
+You are Claude, architect and integrator on SIAS, running unattended from the dispatcher.
 
 Your ticket: $TICKET
 

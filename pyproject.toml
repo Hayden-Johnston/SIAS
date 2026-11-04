@@ -1,7 +1,7 @@
 [project]
-name = "llm-security"
+name = "sias"
 version = "0.1.0"
-description = "Add your description here"
+description = "Self-improving agentic security: layered prompt-injection and jailbreak detection for local models"
 readme = "README.md"
 authors = [
     { name = "Hayden-Johnston" }
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-llm-security = "llm_security.main:main"
+sias = "llm_security.main:main"
 
 [build-system]
 requires = ["uv_build>=0.13.0,<0.14.0"]

@@ -40,5 +40,5 @@ completed agent history; run metrics remain a placeholder. Duration is measured 
 recorded start and end timestamps. Missing board files produce empty views; incomplete JSON records
 are skipped until the next refresh. Agent logs and payload files are never opened.
 
-`ops/llm-security-dashboard.service` is a systemd user unit for an integration checkout at
+`ops/sias-dashboard.service` is a systemd user unit for an integration checkout at
 `%h/llm_security`; installation and startup are left to the integrator.

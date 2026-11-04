@@ -1,6 +1,10 @@
-# llm-security
+# SIAS: self-improving agentic security
 
 **Layered prompt-injection and jailbreak detection for local models, measured by an automated red team.**
+
+SIAS is *self-improving* in two ways. A red team of local models keeps generating new attacks, and
+the defenses are re-scored against them every iteration. Development itself is also agentic: AI agents
+plan, build and review most of the changes, and every change is held to the same held-out metrics.
 
 Prompt injection is the top risk in the OWASP Top 10 for LLM applications. A successful injection
 puts agentic systems at risk of data exposure and unwanted actions. This project builds a

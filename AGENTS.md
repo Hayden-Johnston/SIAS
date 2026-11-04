@@ -1,4 +1,4 @@
-# llm-security
+# SIAS (self-improving agentic security)
 
 Layered prompt-injection and jailbreak defense for **local models** (llama.cpp, ollama, HF), with an
 automated red-team loop to measure and improve it. Scope is prompt-level attacks only: no malware,

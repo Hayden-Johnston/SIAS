@@ -1,5 +1,5 @@
 [Unit]
-Description=llm-security read-only dashboard
+Description=SIAS read-only dashboard
 
 [Service]
 Type=simple
