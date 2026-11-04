@@ -33,7 +33,10 @@ OWNERS = {"claude", "codex", "user"}
 STATUSES = {"todo", "doing", "review", "done", "blocked"}
 RUN_TIMEOUT = "3h"  # longer runs are assumed stuck
 # Budget: both agents are on $20 plans, so runs are few, spaced out, and use cheaper settings.
-MAX_RUNS_PER_DAY = {"claude": 8, "codex": 12}
+# Plan usage resets on rolling 5-hour windows; cap runs per window so a burst can't exhaust one.
+# Interactive Claude sessions share Claude's window, so Claude gets fewer dispatched runs.
+WINDOW = dt.timedelta(hours=5)
+MAX_RUNS_PER_WINDOW = {"claude": 3, "codex": 5}
 MIN_GAP = dt.timedelta(minutes=30)  # rest between an agent's runs
 FAIL_COOLDOWN = dt.timedelta(hours=2)  # after a failed run (often a usage limit), wait before retrying
 PLAN_INTERVAL = dt.timedelta(hours=3)  # at most one planning run per 3 hours
@@ -186,9 +189,9 @@ def tick():
     if (BOARD / "STOP").exists():
         return
     ts = tickets()
-    today = [r for r in runs() if r["start"][:10] == f"{now():%Y-%m-%d}"]
-    capped = {a for a, cap in MAX_RUNS_PER_DAY.items() if sum(r["agent"] == a for r in today) >= cap}
-    capped |= {a for a in MAX_RUNS_PER_DAY if resting(a)}
+    recent = [r for r in runs() if now() - dt.datetime.fromisoformat(r["start"]) < WINDOW]
+    capped = {a for a, cap in MAX_RUNS_PER_WINDOW.items() if sum(r["agent"] == a for r in recent) >= cap}
+    capped |= {a for a in MAX_RUNS_PER_WINDOW if resting(a)}
 
     if not reap("codex") and "codex" not in capped:
         t = pick(ts, "codex")
