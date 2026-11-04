@@ -36,6 +36,7 @@ a { color: #0072b2; } .swatch { display: inline-block; width: .8rem; height: .8r
 <main data-page="activity" hidden><section><h2>Agent activity</h2><div id="agent-states"></div>
 <div class="controls"><button id="earlier">← Earlier</button><button id="later">Later →</button><button id="zoom-in">Zoom in</button><button id="zoom-out">Zoom out</button><button id="live">Live · last 6 h</button></div>
 <p id="activity-window" class="muted"></p><div id="activity-chart" class="table-wrap"></div></section>
+<section><h2>Server uptime</h2><p class="muted">Five-minute samples · green up, vermilion down, gaps unknown · shares the time controls above</p><div id="server-states"></div><div id="server-chart" class="table-wrap"></div></section>
 <section><h2>Running agents</h2><div id="running"></div></section>
 <section><h2>Agent run history</h2><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Mode</th><th>Ticket</th><th>Start</th><th>Duration</th><th>Exit</th></tr></thead><tbody id="history"></tbody></table></div><p id="no-history" class="muted"></p></section>
 </main>
@@ -136,6 +137,7 @@ async function refresh() {
     document.querySelector('#no-history').textContent = data.history.length ? '' : 'No completed agent runs';
     renderNews(data);
     renderMetrics(data.metrics);
+    serverData = data.servers;
     renderActivity(data.activity);
     document.querySelector('#refresh').textContent = `Updated ${pacific(new Date())} · refreshes every 15 seconds`;
   } catch { document.querySelector('#refresh').textContent = 'Unable to refresh. Retrying in 15 seconds.'; }

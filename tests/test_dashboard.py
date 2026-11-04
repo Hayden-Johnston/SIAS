@@ -351,3 +351,33 @@ def test_updates_merge_order_and_window(tmp_path, monkeypatch):
     assert 'PRIVATE' not in json.dumps(feed)
     assert len(dashboard.updates(logs, tmp_path, current, 96)) == 4
     assert dashboard.updates([], tmp_path / 'missing', current, 48) == []
+
+
+def test_server_lanes_samples_gaps_and_projection(tmp_path):
+    import datetime as dt
+
+    current = dt.datetime.fromisoformat('2026-11-04T12:30:00Z')
+    assert dashboard.server_activity(tmp_path, current) == []
+
+    def sample(minute, up=True, models=None, server='llama'):
+        return {'timestamp': f'2026-11-04T12:{minute:02}:00Z', 'server': server,
+                'up': up, 'models': models or [], 'url': 'PRIVATE', 'body': 'PRIVATE'}
+
+    rows = [sample(0), sample(5), sample(10, models=['model-a']),
+            sample(15, False), sample(30, server='Maya'), sample(59),
+            sample(0, server='stale'), {**sample(20), 'up': 'yes'},
+            {**sample(20), 'models': 'bad'}, {**sample(20), 'timestamp': '2026-11-04'},
+            None]
+    (tmp_path / 'servers.jsonl').write_text(
+        '\n'.join(json.dumps(row) for row in reversed(rows)) + '\n{"partial":')
+    lanes = dashboard.state(tmp_path, current=current)['servers']
+    assert [lane['server'] for lane in lanes] == ['Maya', 'llama', 'stale']
+    assert [lane['state'] for lane in lanes] == ['up', 'unknown', 'unknown']
+    intervals = lanes[1]['intervals']
+    assert len(intervals) == 3
+    assert [(row['start'][14:19], row['end'][14:19]) for row in intervals] == [
+        ('00:00', '10:00'), ('10:00', '15:00'), ('15:00', '25:00')]
+    assert intervals[1]['models'] == ['model-a']
+    assert not intervals[2]['up']
+    assert 'PRIVATE' not in json.dumps(lanes)
+    assert dashboard.server_activity(tmp_path, current + dt.timedelta(minutes=1))[1]['state'] == 'unknown'

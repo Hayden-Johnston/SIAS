@@ -15,7 +15,10 @@ import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 REPO = Path(__file__).resolve().parents[1]  # integration checkout, always on master
 BOARD = REPO / "board"
@@ -241,9 +244,45 @@ def resting(agent):
     return until is not None and now() < until
 
 
+def server_sample(server):
+    """One metadata GET; never request inference or persist URLs/response bodies."""
+    result = {"server": server["name"], "up": False, "models": []}
+    try:
+        with urlopen(server["url"], timeout=1) as response:
+            body = response.read(65536)  # status metadata only; cap oversized responses
+            result["up"] = response.status == 200
+        try:
+            data = json.loads(body)
+            result["models"] = [row["id"] for row in data.get("data", [])
+                                if isinstance(row.get("id"), str)
+                                and row.get("status", {"value": "loaded"}).get("value") == "loaded"]
+        except (ValueError, TypeError, AttributeError):
+            pass  # health-only endpoints need not advertise a model
+    except (OSError, URLError, ValueError):
+        pass
+    return result
+
+
+def sample_servers():
+    path = REPO / "servers.local.json"
+    if not path.exists():
+        return
+    servers = json.loads(path.read_text())
+    if not servers:
+        return
+    # Probe all endpoints concurrently: seven unreachable servers cost one timeout, not seven.
+    timestamp = now().isoformat()
+    with ThreadPoolExecutor(max_workers=len(servers)) as pool:
+        samples = list(pool.map(server_sample, servers))
+    with (BOARD / "servers.jsonl").open("a") as output:
+        for sample in samples:
+            output.write(json.dumps({"timestamp": timestamp, **sample}) + "\n")
+
+
 def tick():
     if (BOARD / "STOP").exists():
         return
+    sample_servers()
     pipeline_busy = reap("pipeline")
     history, current = runs(), now()
     pipeline_runs = [dt.datetime.fromisoformat(r["start"]) for r in history if r["agent"] == "pipeline"]

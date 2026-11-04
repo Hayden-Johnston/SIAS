@@ -94,12 +94,15 @@ uv run python -m data_processing.run data/run-config.json runs/experiment-1
 # Read-only inventory of GPUs, storage, model servers and models on disk
 uv run python ops/inventory.py
 
-# Dashboard (updates, blocker alerts, board, agent timeline and metrics; Pacific times) on http://localhost:8300
+# Dashboard (updates, blocker alerts, board, agent/server timelines and metrics; Pacific times) on http://localhost:8300
 python3 dashboard/server.py --port 8300
 ```
 
 Local settings live in files git ignores. Copy `config.example.json` to `config.local.json`
-and put API keys in `.env`.
+and put API keys in `.env`. Copy `servers.example.json` to `servers.local.json` and
+set the local status URLs to enable five-minute server uptime sampling in dispatcher ticks.
+The dashboard Activity page shows server up/down lanes alongside agent activity; no inference
+or server lifecycle operations are performed. See [docs/dashboard.md](docs/dashboard.md).
 
 ### Queued model calls
 

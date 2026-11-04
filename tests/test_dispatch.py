@@ -153,3 +153,69 @@ def test_push_exhaustion_alert(tmp_path, monkeypatch, success_at):
         record = json.loads((tmp_path / 'alerts.jsonl').read_text())
         assert record['kind'] == 'push failure' and record['agent'] == 'codex'
         assert set(record) == {'kind', 'agent', 'timestamp'}
+
+
+@pytest.mark.parametrize(('body', 'models'), [
+    (b'{"data":[{"id":"served"}]}', ['served']),
+    ((b'{"data":[{"id":"ready","status":{"value":"loaded"}},'
+     b'{"id":"preset","status":{"value":"unloaded"}}]}'), ['ready']),
+    (b'{"status":"ok"}', []),
+    (b'healthy', []),
+])
+def test_server_sample_metadata(monkeypatch, body, models):
+    import io
+
+    class Response(io.BytesIO):
+        status = 200
+
+    calls = []
+
+    def get(url, timeout):
+        calls.append((url, timeout))
+        return Response(body)
+
+    monkeypatch.setattr(dispatch, 'urlopen', get)
+    assert dispatch.server_sample({'name': 'test', 'url': 'http://localhost/health'}) == {
+        'server': 'test', 'up': True, 'models': models}
+    assert calls == [('http://localhost/health', 1)]
+
+
+@pytest.mark.parametrize('error', [TimeoutError(), dispatch.URLError('unreachable')])
+def test_server_sample_down(monkeypatch, error):
+    def get(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(dispatch, 'urlopen', get)
+    assert dispatch.server_sample({'name': 'test', 'url': 'http://localhost/health'}) == {
+        'server': 'test', 'up': False, 'models': []}
+
+
+def test_all_down_tick_is_concurrent(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(dispatch, 'REPO', tmp_path)
+    monkeypatch.setattr(dispatch, 'BOARD', tmp_path)
+    monkeypatch.setattr(dispatch, 'tickets', list)
+    monkeypatch.setattr(dispatch, 'runs', list)
+    monkeypatch.setattr(dispatch, 'reap', lambda agent: True)
+    servers = [{'name': f'server-{i}', 'url': 'http://localhost/health'} for i in range(7)]
+    (tmp_path / 'servers.local.json').write_text(json.dumps(servers))
+
+    def timeout(url, timeout):
+        time.sleep(timeout)
+        raise TimeoutError()
+
+    monkeypatch.setattr(dispatch, 'urlopen', timeout)
+    started = time.monotonic()
+    dispatch.tick()
+    elapsed = time.monotonic() - started
+    assert elapsed < 3, elapsed
+    samples = [json.loads(line) for line in (tmp_path / 'servers.jsonl').read_text().splitlines()]
+    assert [row['server'] for row in samples] == [row['name'] for row in servers]
+    assert all(not row['up'] and row['models'] == [] for row in samples)
+    assert all(set(row) == {'timestamp', 'server', 'up', 'models'} for row in samples)
+    dispatch.tick()
+    assert len((tmp_path / 'servers.jsonl').read_text().splitlines()) == 14
+    (tmp_path / 'STOP').touch()
+    dispatch.tick()
+    assert len((tmp_path / 'servers.jsonl').read_text().splitlines()) == 14

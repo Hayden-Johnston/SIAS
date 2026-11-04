@@ -168,3 +168,36 @@ def test_updates_alerts_and_notifications(endpoint):
             assert not errors, errors
         finally:
             browser.close()
+
+
+def test_server_activity_chart(endpoint):
+    import json
+
+    root, url = endpoint
+    (root / 'servers.jsonl').write_text('\n'.join(json.dumps(row) for row in [
+        {'timestamp': '2026-11-04T11:50:00Z', 'server': 'llama', 'up': True, 'models': ['model-a']},
+        {'timestamp': '2026-11-04T11:55:00Z', 'server': 'llama', 'up': False, 'models': []},
+    ]))
+    with playwright.sync_playwright() as browser_tools:
+        browser = browser_tools.chromium.launch(args=['--no-sandbox'])
+        page = browser.new_page()
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        try:
+            page.goto(url + '/#activity')
+            page.wait_for_selector('#server-chart svg')
+            # Fix the clock independently of the machine's current time.
+            page.evaluate("renderActivity({...activityData, now: '2026-11-04T12:00:00Z'})")
+            assert page.locator('#server-chart rect').count() == 2
+            assert 'model-a' in page.locator('#server-chart title').first.text_content()
+            assert 'down' in page.locator('#server-chart title').last.text_content()
+            width = float(page.locator('#server-chart rect').first.get_attribute('width'))
+            page.locator('#zoom-in').click()
+            assert float(page.locator('#server-chart rect').first.get_attribute('width')) > width
+            page.locator('#earlier').click()
+            assert page.locator('#server-chart rect').count() == 0
+            page.locator('#live').click()
+            assert page.locator('#server-chart rect').count() == 2
+            assert not errors, errors
+        finally:
+            browser.close()

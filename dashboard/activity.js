@@ -1,5 +1,6 @@
-// Agent metadata only. Pan and zoom keep a fixed window until Live is selected.
+// Agent and server metadata only. Pan and zoom keep a fixed window until Live is selected.
 let activityData, windowHours = 6, windowEnd = null;
+let serverData = [];
 const agentColor = agent => {
   const known = {claude: '#0072b2', codex: '#009e73', pi: '#cc79a7'};
   let hash = 0;
@@ -13,6 +14,7 @@ function renderActivity(data) {
   const states = document.querySelector('#agent-states'); states.replaceChildren();
   const chart = document.querySelector('#activity-chart'); chart.replaceChildren();
   document.querySelector('#activity-window').textContent = `${pacific(start)} – ${pacific(end)} · ${windowEnd === null ? 'Live' : 'History'}`;
+  renderServers(start, end);
   if (!data.agents.length) { states.append(el('p', 'No agent runs recorded', 'muted')); return; }
   const svg = svgNode('svg', {class: 'activity-plot', viewBox: `0 0 1000 ${data.agents.length * 100 + 80}`, role: 'img', 'aria-label': 'Agent activity timeline in Pacific time'});
   for (let tick = 0; tick <= 4; tick++) {
@@ -41,6 +43,33 @@ function renderActivity(data) {
         group.append(svgNode('line', {x1: x(to), x2: x(to), y1: y - 3, y2: y + 31, stroke: 'var(--ink)', 'stroke-width': 2}));
         group.append(svgNode('text', {x: x(to), y: y + 46, 'text-anchor': 'end'}, exit));
       }
+      svg.append(group);
+    }
+  });
+  chart.append(svg);
+}
+function renderServers(start, end) {
+  const states = document.querySelector('#server-states'), chart = document.querySelector('#server-chart');
+  states.replaceChildren(); chart.replaceChildren();
+  if (!serverData.length) { states.append(el('p', 'No server samples recorded', 'muted')); return; }
+  const x = time => 160 + (time - start) / (end - start) * 800;
+  const svg = svgNode('svg', {class: 'activity-plot', viewBox: `0 0 1000 ${serverData.length * 80 + 60}`, role: 'img', 'aria-label': 'Server uptime timeline in Pacific time'});
+  for (let tick = 0; tick <= 4; tick++) {
+    const time = start + (end - start) * tick / 4;
+    svg.append(svgNode('line', {x1: x(time), x2: x(time), y1: 40, y2: serverData.length * 80 + 40, stroke: 'var(--line)'}));
+    svg.append(svgNode('text', {x: x(time), y: 20, 'text-anchor': tick === 0 ? 'start' : tick === 4 ? 'end' : 'middle'}, new Intl.DateTimeFormat('en-US', {timeZone: 'America/Los_Angeles', hour: '2-digit', minute: '2-digit', timeZoneName: 'short'}).format(time)));
+  }
+  serverData.forEach((lane, index) => {
+    states.append(el('p', `${lane.server} · ${lane.state}${lane.state === 'up' && lane.models.length ? ' · ' + lane.models.join(', ') : ''}`));
+    const y = 65 + index * 80;
+    svg.append(svgNode('text', {x: 10, y: y + 18}, lane.server));
+    for (const interval of lane.intervals) {
+      const from = Math.max(start, Date.parse(interval.start)), to = Math.min(end, Date.parse(interval.end));
+      if (to <= from) continue;
+      const status = interval.up ? 'up' : 'down', group = svgNode('g');
+      group.append(svgNode('title', {}, `${lane.server} · ${status} · ${interval.models.join(', ') || 'model unknown'} · ${pacific(interval.start)} – ${pacific(interval.end)}`));
+      group.append(svgNode('rect', {x: x(from), y, width: Math.max(1, x(to) - x(from)), height: 28, fill: interval.up ? '#009e73' : '#d55e00', opacity: .8}));
+      group.append(svgNode('text', {x: x(from), y: y - 8}, `${status}${interval.models.length ? ' · ' + interval.models.join(', ') : ''}`));
       svg.append(group);
     }
   });

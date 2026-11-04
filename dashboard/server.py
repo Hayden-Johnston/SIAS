@@ -124,6 +124,42 @@ def timestamp(value):
     return dt.datetime.fromisoformat(value).astimezone(dt.timezone.utc).isoformat()  # noqa: UP017
 
 
+def server_activity(board, current):
+    """Hold samples for at most two five-minute ticks; gaps remain unknown."""
+    samples = {}
+    path = board / "servers.jsonl"
+    for line in path.read_text().splitlines() if path.exists() else []:
+        try:
+            row = json.loads(line)
+            time = dt.datetime.fromisoformat(row["timestamp"])
+            if (time.utcoffset() is None or time > current or not isinstance(row["server"], str)
+                    or type(row["up"]) is not bool or not isinstance(row["models"], list)
+                    or not all(isinstance(model, str) for model in row["models"])):
+                continue
+            samples.setdefault(row["server"], {})[time] = {
+                "up": row["up"], "models": row["models"]}
+        except (ValueError, TypeError, KeyError, AttributeError):
+            continue
+    lanes = []
+    for name, records in sorted(samples.items()):
+        ordered = sorted(records.items())
+        intervals = []
+        for index, (start, sample) in enumerate(ordered):
+            end = min(current, start + dt.timedelta(minutes=10),
+                      ordered[index + 1][0] if index + 1 < len(ordered) else current)
+            interval = {"start": start.isoformat(), "end": end.isoformat(), **sample}
+            if (intervals and intervals[-1]["end"] == interval["start"]
+                    and all(intervals[-1][key] == sample[key] for key in ("up", "models"))):
+                intervals[-1]["end"] = interval["end"]
+            else:
+                intervals.append(interval)
+        latest, sample = ordered[-1]
+        status = ("up" if sample["up"] else "down") if current - latest < dt.timedelta(minutes=10) else "unknown"
+        lanes.append({"server": name, "state": status, "models": sample["models"],
+                      "intervals": intervals})
+    return lanes
+
+
 def one_line(value):
     return " ".join(value.split())[:240]
 
@@ -257,6 +293,7 @@ def state(board, runs=RUNS, current=None, repo=PAGE.parent.parent, hours=48):
     return {"columns": columns, "counts": {k: len(v) for k, v in columns.items()},
             "running": running, "history": history[::-1], "metrics": run_metrics(runs),
             "activity": activity(history, running, titles, current),
+            "servers": server_activity(board, current),
             "alerts": alerts(board, ts, logs, history, running, current),
             "updates": updates(logs, repo, current, hours)}
 

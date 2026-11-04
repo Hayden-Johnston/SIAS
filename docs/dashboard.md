@@ -89,8 +89,7 @@ Active hours count the union of each agent's intervals clipped to the visible wi
 State lines show running ticket and minutes, resting, capped until a Pacific timestamp, or idle.
 The dispatcher and dashboard share pause calculations, including minimum gaps, failed-run cooldowns
 and rolling run caps. Running records take precedence. State reflects dispatcher records, not a
-process probe, and can lag until dispatch reaps a finished process. No server lanes are built yet;
-those can be added alongside the agent chart later. Dense start tags can overlap at wide zoom levels.
+process probe, and can lag until dispatch reaps a finished process. Dense start tags can overlap at wide zoom levels.
 
 ## Updates and alerts
 
@@ -120,3 +119,30 @@ successful refresh, newly appearing alert IDs notify once while the tab is open;
 page load do not notify. Permission must be granted by the browser (usually requiring localhost or
 HTTPS). Notifications may be unavailable on browsers that require a service worker. No background
 notification service is installed.
+
+
+## Server uptime
+
+Copy `servers.example.json` to gitignored `servers.local.json` in the integration checkout and
+replace the example second-host address with its local address. This is the single endpoint list:
+five llama.cpp `/v1/models` endpoints, the second host router's `/v1/models`, and Maya `/health`.
+The orchestrator owns this configuration. Use status-only URLs that require no authentication;
+no credentials or arbitrary headers are stored. Prefer numeric local addresses to avoid DNS delays.
+No config means no sampling. `board/STOP` pauses sampling along with dispatching.
+
+Each `ops/dispatch.py tick` probes the configured endpoints concurrently using stdlib HTTP GETs
+with one-second socket timeouts and a 64 KiB response cap. HTTP 200 means up; HTTP errors and
+transport failures mean down (including authorization failures). This is endpoint availability,
+not a guarantee that inference will succeed. Model IDs are captured from OpenAI-style model lists;
+router presets with a status other than loaded are excluded. Health-only responses can leave the
+model unknown. No inference, load, unload, or server/container lifecycle requests are made.
+
+Only timestamp, configured display name, up/down and model IDs are appended to local
+`board/servers.jsonl`; URLs and response/error bodies are discarded. The dashboard reads this
+metadata file without probing servers or opening the local config. The Activity page's second
+chart shares the agent chart's Live, pan and zoom controls, with directly labeled server lanes,
+green up bars, vermilion down bars and model/time hover details in Pacific time. Samples extend to
+the next sample or ten minutes, whichever comes first, and merge when status/model agree.
+Longer gaps remain blank and the current state becomes unknown after ten minutes. This is sampled
+history, not continuous uptime measurement. Partial/invalid records and future samples are skipped.
+The append-only history has no automatic retention policy.

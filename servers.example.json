@@ -1,0 +1,9 @@
+[
+    {"name": "llama-8081", "url": "http://127.0.0.1:8081/v1/models"},
+    {"name": "llama-8082", "url": "http://127.0.0.1:8082/v1/models"},
+    {"name": "llama-8083", "url": "http://127.0.0.1:8083/v1/models"},
+    {"name": "llama-8084", "url": "http://127.0.0.1:8084/v1/models"},
+    {"name": "llama-8085", "url": "http://127.0.0.1:8085/v1/models"},
+    {"name": "second-host-router", "url": "http://second-host.example:8080/v1/models"},
+    {"name": "Maya", "url": "http://127.0.0.1:8099/health"}
+]
