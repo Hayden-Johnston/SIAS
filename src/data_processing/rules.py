@@ -38,60 +38,17 @@ RULES = (
 )
 
 
-# Ordinal feature weights, not probabilities; max aggregation prevents weak
-# features or repeated directives from accumulating into a strong detection.
-FEATURE_WEIGHTS = {"role_override": 0.9, "assistant_refusal_suppression": 0.75,
-                   "instruction_density": 0.25}
-OVERRIDE_VERBS = {"ignore", "disregard", "forget", "override", "bypass", "discard",
-                  "replace", "suspend"}
-ROLE_WORDS = {"system", "developer", "assistant"}
-DIRECTIVE_VERBS = OVERRIDE_VERBS | {"reveal", "output", "respond", "print", "follow"}
-
-
-def feature_scores(text):
-    """Named token features on normalized text, bounded to a sentence/line."""
-    found = set()
-    clauses = [re.findall(r"\b\w+\b", part) for part in re.split(r"[.!?;\n]+", text)]
-    clauses = [tokens for tokens in clauses if tokens]
-    directives = 0
-    for tokens in clauses:
-        # Only clause-initial imperatives, optionally preceded by please/now.
-        start = 1 if tokens[0] in {"please", "now"} else 0
-        if start == len(tokens):
-            continue
-        verb = tokens[start]
-        directives += verb in DIRECTIVE_VERBS
-        # Six following tokens permit modifiers, without spanning sentences.
-        if ((verb in OVERRIDE_VERBS or tokens[start:start + 2] == ["set", "aside"])
-                and ROLE_WORDS.intersection(tokens[start + 1:start + 7])):
-            found.add("role_override")
-        for index, token in enumerate(tokens):
-            # An explicit assistant reference within eight preceding tokens,
-            # followed by a second-person obligation to suppress refusal.
-            if (token == "you" and "assistant" in tokens[max(0, index - 8):index]
-                    and tokens[index + 1:index + 2] in (["must"], ["shall"])
-                    and tokens[index + 2:index + 3] in (["not"], ["never"])
-                    and "refuse" in tokens[index + 3:index + 6]):
-                found.add("assistant_refusal_suppression")
-    # Three directive clauses and at least half the clauses prevent one request from
-    # registering as dense. Still weak: benign task lists often meet this test.
-    if directives >= 3 and directives / len(clauses) >= 0.5:
-        found.add("instruction_density")
-    return {name: FEATURE_WEIGHTS[name] for name in sorted(found)}
-
-
 def score(text):
     """Return a deterministic [0, 1] score; preserve the stored dataset text."""
     text = unicodedata.normalize("NFKC", text).casefold().translate(HOMOGLYPHS)
     text = "".join(char for char in text if unicodedata.category(char) != "Cf")
-    return max([weight for weight, pattern in RULES if pattern.search(text)]
-               + list(feature_scores(text).values()), default=0.0)
+    return max((weight for weight, pattern in RULES if pattern.search(text)), default=0.0)
 
 
 def write_cache(dataset, dataset_manifest, output, *, chunk_chars=None, overlap_chars=None):
     """Validate before replacing a cache; report aggregates without payload text.
 
-    Inputs must remain unchanged during production. Memory scales with row count.
+    Inputs must remain unchanged during production. Memory scales with cache entries and row count.
     Reproduction preserves scores; measured latencies and cache hashes can change.
     """
     dataset, dataset_manifest, output = map(Path, (dataset, dataset_manifest, output))

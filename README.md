@@ -43,8 +43,8 @@ activation probe → system-one classifier models → verdict**
 Each stage scores a prompt from 0 to 1. A prompt is flagged at the first stage whose score crosses
 its threshold, so most traffic never reaches a model. Stage order is decided by measurement.
 Long inputs are split into chunks so the pipeline can also report *where* an attack sits.
-The CPU rule scorer combines regex with named token/proximity and instruction-density features;
-it exports row caches or optional chunk caches for location measurements ([usage](docs/runs.md)).
+The CPU rule scorer exports row caches or optional chunk caches for location measurements
+([usage](docs/runs.md)).
 
 Every run is **deterministic and replayable**. Model outputs are cached once. Scoring runs replay
 those caches against a pinned dataset and write a manifest with counts, rates, confidence intervals,

@@ -1,16 +1,19 @@
-# Rule token features and chunk cache: candidate fails merge gate
+# Rule token features: negative result; chunk cache export retained
 
 Ticket 0028. **Do not merge these detection weights on the current evidence.**
 Validation and held-out detection did not improve, and validation false positives increased.
-The tested candidate is retained on the worker branch for Claude to review or revise; it is
-not an approved detection improvement. No tuning followed this measurement.
+Claude rejected the feature changes on 2026-11-04: the final implementation retains only
+optional chunk cache export and restores the baseline scorer. Features are deferred until
+evaluator-approved validation data exists. No tuning followed this measurement.
+The measurements below document the rejected candidate, not the final implementation.
 
 ## Change
 
-Added three named, deterministic CPU token features without dependencies or inference:
+The rejected candidate added three named, deterministic CPU token features without
+dependencies or inference:
 `role_override` (0.9), `assistant_refusal_suppression` (0.75), and
 `instruction_density` (0.25). Their clause boundaries, token distances, verb lists and weights
-are explicit in `rules.py` and documented in `docs/runs.md`. Existing regex scores remain.
+were explicit in the candidate source (commit `f1d0846`). Existing regex scores remained.
 Maximum strength wins; repetition and weak features cannot accumulate into a catch.
 Density remains weak because ordinary benign task lists are directive-heavy.
 
@@ -88,16 +91,18 @@ Producer SHA-256:
 Set `SIAS_DATA` to the storage root containing the pinned normalized snapshots. The following
 rebuilds the same splits/caches and replays all four comparisons, printing aggregates only.
 It does not inspect corpus text interactively. Baseline source comes from the integration
-commit used for this ticket. Timing and cache hashes will differ.
+commit used for this ticket; candidate source is pinned before feature removal. Timing and
+cache hashes will differ.
 
 ```sh
 git show 65e326c:src/data_processing/rules.py > /tmp/sias-0028-baseline.py
+git show f1d0846:src/data_processing/rules.py > /tmp/sias-0028-candidate.py
 uv run python - <<'PY'
 import importlib.util
 import os
 import json
 from pathlib import Path
-from data_processing import normalize, rules, run, split
+from data_processing import normalize, run, split
 
 root = Path(os.environ['SIAS_DATA'])
 work = root / 'runs/rules-0028'
@@ -121,6 +126,9 @@ for name, filename in [('validation', 'dev.jsonl'), ('held_out', 'heldout.jsonl'
 spec = importlib.util.spec_from_file_location('baseline', '/tmp/sias-0028-baseline.py')
 baseline = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(baseline)
+spec = importlib.util.spec_from_file_location('candidate', '/tmp/sias-0028-candidate.py')
+rules = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rules)
 current_score = rules.score
 summary = {}
 for name in ('validation', 'held_out'):
@@ -148,14 +156,20 @@ for name in ('validation', 'held_out'):
 PY
 ```
 
-## Verification and decision needed
+## Final scope and verification
 
-`uv run pytest -q`: **250 passed, 1 skipped, 48 subtests passed**.
-`uv run ruff check`: **passed**. Synthetic tests cover every named feature with benign
-near misses, normalized scoring, repetition, original-turn chunk coordinates, empty turns,
-location replay, cache latency totals and invalid-window preservation.
+Per Claude's ticket decision, the feature code, feature tests and feature usage documentation
+were removed. `score()` matches the integration baseline exactly (verified by AST comparison). Only optional chunk export,
+its tests and documentation remain, alongside this negative result. Row-cache callers retain
+their existing fields and scoring; the aggregate summary additionally counts cache entries.
+The producer file hash versions the implementation; no runner/cache schema change is needed.
+Chunking is opt-in and can change detection at window boundaries; no detection improvement
+is claimed for enabling it. The baseline rows in the tables above measure the retained scorer
+with these window settings. Existing row-mode latency and storage were not re-benchmarked.
 
-Blocked for Claude: the tested feature set fails the ticket's detection improvement gate.
-Decide whether to retain the chunk-export work separately, revise the feature approach on
-fresh development data, or defer until evaluator-approved validation data is available.
-The inspected held-out aggregate must not now be used as a tuning target.
+Tests cover original-turn chunk coordinates, empty turns/conversations/datasets, location
+replay, cache latency totals, CLI flags and invalid-window preservation. The held-out aggregate
+must not be used as a tuning target. No inference or server lifecycle operations were needed.
+
+Final verification: `uv run pytest -q`: **245 passed, 1 skipped, 48 subtests passed**;
+`uv run ruff check`: **passed**.
