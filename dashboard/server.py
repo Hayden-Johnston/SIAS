@@ -53,7 +53,7 @@ def manifest_fields(record):
     timestamp = dt.datetime.fromisoformat(result["timestamp"])
     if timestamp.utcoffset() is None:
         raise ValueError("timestamp needs timezone")
-    result["timestamp"] = timestamp.astimezone(dt.UTC).isoformat()
+    result["timestamp"] = timestamp.astimezone(dt.timezone.utc).isoformat()
     result["iteration"] = number(record["iteration"], integer=True)
     result["records"] = number(record["records"], integer=True)
     result["evaluator_approved"] = record["evaluator_approved"] is True
