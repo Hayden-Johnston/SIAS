@@ -14,7 +14,7 @@ wheels/
 .env
 
 # Data
-data/dev
+data/
 results
 # Agent board (local operational state)
 board/
