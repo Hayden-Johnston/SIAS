@@ -100,6 +100,38 @@ python3 dashboard/server.py --port 8300
 Local settings live in files git ignores. Copy `config.example.json` to `config.local.json`
 and put API keys in `.env`.
 
+### Queued model calls
+
+`llm_proxy.Client` reads `MAYA_URL` (OpenAI API base URL ending in `/v1`) and
+`MAYA_API_KEY` from `.env`, with environment variables taking precedence. It only sends chat
+requests to an already running server.
+
+```python
+from llm_proxy import Client
+
+client = Client("caches/chat.sqlite")
+keys = client.submit_batch(
+    "served-model-id",
+    [[{"role": "user", "content": "Say hello."}]],
+    temperature=0, max_tokens=32,
+)
+client.drain()
+output = client.result(keys[0])
+```
+
+Use one database per server: drainers sharing it serialize HTTP calls at concurrency 1.
+Submission persists immediately; duplicate model, messages and generation parameters reuse the
+same key. `drain()` processes pending jobs in submission order and returns the number completed.
+`result(key)` returns status (`pending`, `done`, `failed`), response, attempts, error code and
+cumulative HTTP latency in seconds (excluding backoff), or `None` for an unknown key.
+Completed results replay without inference. Pin the model ID to the checkpoint when reusing a cache.
+
+Transport errors, HTTP 429 and HTTP 5xx retry up to three attempts per drain with 1s then 2s
+backoff; exhausted jobs remain pending for a later drain. Other HTTP errors, malformed responses
+and explicit refusals are marked failed and raise `ProxyError`, stopping the drain without retrying
+that job. A crash during an HTTP call can repeat that call on resume. Streaming is unsupported.
+The database contains request and response text: keep it local and outside git.
+
 ## Repository layout
 
 | Path | Contents |
