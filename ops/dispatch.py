@@ -122,7 +122,7 @@ def launch(agent, mode, ticket):
                "--add-dir", str(CODEX_GITDIR), "--add-dir", str(BOARD), "--add-dir", str(Path.home() / ".cache" / "uv"),
                "-C", str(CODEX_CLONE), prompt]
     else:
-        cmd = ["claude", "-p", "--permission-mode", "auto", "--add-dir", str(WT), prompt]
+        cmd = ["claude", "-p", prompt, "--permission-mode", "auto", "--add-dir", str(WT)]  # --add-dir is variadic
     exit_file = LOGS / f"{name}.exit"
     shell = 'timeout "$0" "$@"; echo $? > "$EXIT_FILE"'
     with (LOGS / f"{name}.log").open("w") as out:
