@@ -1,8 +1,8 @@
 # Datasets
 
-## Schema, version 1 (one for every source, public and generated)
+## Base schema fields (one for every source, public and generated)
 
-Every row contains exactly these fields:
+Every row contains these base fields plus the three version 2 fields below:
 
 | Field | Contract |
 |---|---|
@@ -35,11 +35,11 @@ This command normalizes the data schema. It does not perform detection-stage Uni
 transformations, classify prompts, approve labels, deduplicate near matches, or assign splits.
 The existing prototype `DataHandler` is unchanged; it still uses its original online loader.
 
-## Attack taxonomy and schema version 2 (specified, not yet implemented)
+## Attack taxonomy and schema version 2
 
 Version 1 records one free-text `attack_family`. That cannot answer "which delivery channels and
 techniques do we miss?" or "where in a long context is the attack?". Version 2 adds three fields and
-keeps every version 1 contract above. The normalizer still accepts only one version per file; the
+keeps every base-field contract above. Version 1 files are rejected. The normalizer still accepts only one version per file; the
 manifest records `schema_version: 2` and adds `channels` and `techniques` counts.
 
 | Field | Contract |
@@ -139,6 +139,9 @@ Example for a source with `body` and integer `class` fields:
     "attack_family": "benign",
     "group_id": "synthetic-group",
     "variant_type": "plain",
+    "channel": "direct",
+    "techniques": [],
+    "spans": [],
     "source": "synthetic-fixture",
     "license": "CC0-1.0",
     "publishable": "no",

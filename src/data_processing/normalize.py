@@ -12,6 +12,12 @@ from pathlib import Path
 FIELDS = {
     "id", "text", "label", "label_source", "attack_family", "group_id",
     "variant_type", "source", "license", "publishable", "timestamp",
+    "channel", "techniques", "spans",
+}
+CHANNELS = {"direct", "multi_turn", "document", "email", "tool_output", "code_comment"}
+TECHNIQUES = {
+    "override", "roleplay", "encoding", "delimiter_spoof", "payload_split",
+    "many_shot", "named_jailbreak", "novel",
 }
 VARIANTS = {"plain", "paraphrase", "obfuscated"}
 
@@ -37,10 +43,17 @@ def validate_record(record):
     Text is preserved exactly. Unicode/encoding transformations belong in scored
     detection stages, where their effect can be measured separately.
     """
-    if not isinstance(record, dict) or set(record) != FIELDS:
-        raise ValueError("record must contain exactly the schema fields")
+    if isinstance(record, dict) and set(record) == FIELDS - {"channel", "techniques", "spans"}:
+        raise ValueError("schema version 1 is unsupported; channel, techniques, spans require version 2")
+    if not isinstance(record, dict):
+        raise ValueError("record must contain exactly the schema fields")  # noqa: TRY004 - external JSON
+    missing = sorted(FIELDS - set(record))
+    if missing:
+        raise ValueError(f"record missing schema fields: {', '.join(missing)}")
+    if set(record) - FIELDS:
+        raise ValueError("record contains unknown schema fields")
     result = dict(record)
-    for field in FIELDS - {"label"}:
+    for field in FIELDS - {"label", "techniques", "spans"}:
         if not isinstance(result[field], str) or not result[field].strip():
             raise ValueError(f"{field} must be a nonempty string")
     if type(result["label"]) is not int or result["label"] not in (0, 1):
@@ -49,6 +62,51 @@ def validate_record(record):
         raise ValueError("variant_type must be plain, paraphrase, or obfuscated")
     if result["publishable"] not in {"yes", "no"}:
         raise ValueError("publishable must be yes or no")
+    if result["channel"] not in CHANNELS:
+        raise ValueError("channel must be a schema version 2 channel")
+    techniques = result["techniques"]
+    if (not isinstance(techniques, list)
+            or any(not isinstance(item, str) or item not in TECHNIQUES for item in techniques)):
+        raise ValueError("techniques must be a list of schema version 2 techniques")
+    if len(techniques) != len(set(techniques)):
+        raise ValueError("techniques must be unique")
+    if bool(techniques) != bool(result["label"]):
+        raise ValueError("techniques must be empty if and only if label is 0")
+    if result["label"] == 1 and result["variant_type"] == "obfuscated" and "encoding" not in techniques:
+        raise ValueError("techniques must include encoding for an obfuscated attack")
+    result["techniques"] = sorted(techniques)
+    turns = [result["text"]]
+    if result["channel"] == "multi_turn":
+        try:
+            messages = json.loads(result["text"])
+        except ValueError:
+            raise ValueError("text for multi_turn must be a JSON message array") from None
+        if (not isinstance(messages, list) or any(
+            not isinstance(message, dict) or set(message) != {"role", "content"}
+            or message["role"] not in ("user", "assistant")
+            or not isinstance(message["content"], str) for message in messages
+        )):
+            raise ValueError("text for multi_turn requires user/assistant role and string content")
+        turns = [message["content"] for message in messages]
+    spans = result["spans"]
+    if result["label"] == 0 and spans != []:
+        raise ValueError("spans must be [] for label 0")
+    if spans is not None:
+        if not isinstance(spans, list):
+            raise ValueError("spans must be a list or null")
+        previous = None
+        for span in spans:
+            if (not isinstance(span, list) or len(span) != 3
+                    or any(type(offset) is not int for offset in span)):
+                raise ValueError("spans entries must be [turn, start, end] integers")
+            turn, start, end = span
+            if not (0 <= turn < len(turns) and 0 <= start < end <= len(turns[turn])):
+                raise ValueError("spans bounds must fit the referenced text turn")
+            if previous is not None and (span < previous or (
+                turn == previous[0] and start < previous[2]
+            )):
+                raise ValueError("spans must be sorted and non-overlapping")
+            previous = span
     result["timestamp"] = utc_timestamp(result["timestamp"])
     return result
 
@@ -99,7 +157,7 @@ def normalize(source, output, manifest, mapping=None):
     output.parent.mkdir(parents=True, exist_ok=True)
     manifest.parent.mkdir(parents=True, exist_ok=True)
     ids = set()
-    labels, families, variants, publication = (Counter() for _ in range(4))
+    labels, families, variants, publication, channels, techniques = (Counter() for _ in range(6))
     source_hash, output_hash = hashlib.sha256(), hashlib.sha256()
     output_temp = manifest_temp = None
     try:
@@ -126,17 +184,21 @@ def normalize(source, output, manifest, mapping=None):
                     families[record["attack_family"]] += 1
                     variants[record["variant_type"]] += 1
                     publication[record["publishable"]] += 1
+                    channels[record["channel"]] += 1
+                    techniques.update(record["techniques"])
                     encoded = (canonical_json(record) + "\n").encode("utf-8")
                     writer.write(encoded)
                     output_hash.update(encoded)
         result = {
-            "schema_version": 1,
-            "normalizer_version": 1,
+            "schema_version": 2,
+            "normalizer_version": 2,
             "source_sha256": source_hash.hexdigest(),
             "mapping_sha256": hashlib.sha256(canonical_json(mapping).encode()).hexdigest(),
             "output_sha256": output_hash.hexdigest(),
             "records": len(ids),
             "labels": dict(labels),
+            "channels": dict(channels),
+            "techniques": dict(techniques),
             "attack_families": dict(families),
             "variant_types": dict(variants),
             "publishable": dict(publication),

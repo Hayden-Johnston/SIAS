@@ -19,7 +19,8 @@ class ReplayTests(unittest.TestCase):
         source = self.root / "source.jsonl"
         with source.open("w") as writer:
             for index, label in enumerate([1, 0, 1, 0]):
-                row = {"id": str(index), "text": "Synthetic fixture text", "label": label,
+                row = {"channel": "direct", "techniques": ["novel"] if label else [],
+                           "spans": None if label else [], "id": str(index), "text": "Synthetic fixture text", "label": label,
                            "label_source": "synthetic", "attack_family": "fixture" if label else "benign",
                            "group_id": str(index), "variant_type": "plain", "source": "synthetic",
                            "license": "CC0-1.0", "publishable": "no", "timestamp": "2026-11-04T00:00:00Z"}
@@ -105,6 +106,15 @@ class ReplayTests(unittest.TestCase):
     def test_cache_mutation_is_rejected_before_run_creation(self):
         (self.root / "first.jsonl").write_text("changed\n")
         with self.assertRaisesRegex(ValueError, "cache checksum mismatch"):
+            self.replay()
+        self.assertFalse(self.run_directory.exists())
+
+    def test_version_1_dataset_manifest_is_rejected(self):
+        path = self.root / "dataset.manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["schema_version"] = 1
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "schema version 2 required"):
             self.replay()
         self.assertFalse(self.run_directory.exists())
 

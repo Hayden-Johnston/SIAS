@@ -15,6 +15,7 @@ def record(**changes):
         "label_source": "synthetic-test", "attack_family": "benign", "group_id": "fixture-group",
         "variant_type": "plain", "source": "synthetic", "license": "CC0-1.0", "publishable": "no",
         "timestamp": "2026-11-04T08:00:00+02:00",
+        "channel": "direct", "techniques": [], "spans": [],
     }
     return row | changes
 
@@ -52,10 +53,10 @@ class NormalizeTests(unittest.TestCase):
 
     def test_mapping_and_generated_ids_are_independent_of_row_order(self):
         defaults = record()
-        for field in ("id", "text", "label"):
+        for field in ("id", "text", "label", "techniques"):
             del defaults[field]
-        mapping = {"fields": {"text": "body", "label": "class"}, "defaults": defaults}
-        rows = [{"body": "Synthetic alpha", "class": 0}, {"body": "Synthetic beta", "class": 1}]
+        mapping = {"fields": {"text": "body", "label": "class", "techniques": "methods"}, "defaults": defaults}
+        rows = [{"body": "Synthetic alpha", "class": 0, "methods": []}, {"body": "Synthetic beta", "class": 1, "methods": ["novel"]}]
         self.write_rows(rows)
         self.run_normalize(mapping=mapping)
         first = [json.loads(line) for line in self.output.read_text().splitlines()]
@@ -82,6 +83,86 @@ class NormalizeTests(unittest.TestCase):
                 self.assertEqual(self.output.read_text(), "previous output")
                 self.assertEqual(self.manifest.read_text(), "previous manifest")
                 self.assertEqual(len(list(self.root.iterdir())), 3)
+
+    def test_v2_multi_turn_spans_counts_and_replay(self):
+        text = json.dumps([{"role": "user", "content": "café"},
+                           {"role": "assistant", "content": "ok"},
+                           {"role": "user", "content": "synthetic"}])
+        self.write_rows([record(label=1, channel="multi_turn", text=text,
+                                techniques=["roleplay", "encoding"], variant_type="obfuscated",
+                                spans=[[0, 0, 4], [2, 1, 3], [2, 3, 9]])])
+        manifest = self.run_normalize()
+        before = self.output.read_bytes(), self.manifest.read_bytes()
+        self.run_normalize()
+        self.assertEqual(before, (self.output.read_bytes(), self.manifest.read_bytes()))
+        row = json.loads(self.output.read_text())
+        self.assertEqual(row["text"], text)
+        self.assertEqual(row["techniques"], ["encoding", "roleplay"])
+        self.assertEqual(manifest["schema_version"], 2)
+        self.assertEqual(manifest["channels"], {"multi_turn": 1})
+        self.assertEqual(manifest["techniques"], {"encoding": 1, "roleplay": 1})
+
+    def test_v2_rejections_name_fields_without_text(self):
+        cases = [
+            ({"channel": "unknown"}, "channel"),
+            ({"techniques": None}, "techniques"),
+            ({"techniques": ["unknown"]}, "techniques"),
+            ({"techniques": [True]}, "techniques"),
+            ({"techniques": ["novel", "novel"]}, "techniques"),
+            ({"techniques": []}, "techniques"),
+            ({"label": 0}, "techniques"),
+            ({"variant_type": "obfuscated"}, "techniques"),
+            ({"spans": "unknown"}, "spans"),
+            ({"spans": [[0, 0]]}, "spans"),
+            ({"spans": [[True, 0, 1]]}, "spans"),
+            ({"spans": [[0, False, 1]]}, "spans"),
+            ({"spans": [[0, 0, True]]}, "spans"),
+            ({"spans": [[0, 0, 1.0]]}, "spans"),
+            ({"spans": [[1, 0, 1]]}, "spans"),
+            ({"spans": [[-1, 0, 1]]}, "spans"),
+            ({"spans": [[0, -1, 1]]}, "spans"),
+            ({"spans": [[0, 1, 1]]}, "spans"),
+            ({"spans": [[0, 0, 999]]}, "spans"),
+            ({"spans": [[0, 2, 4], [0, 1, 2]]}, "spans"),
+            ({"spans": [[0, 0, 3], [0, 2, 4]]}, "spans"),
+            ({"label": 0, "techniques": [], "spans": None}, "spans"),
+            ({"label": 0, "techniques": [], "spans": [[0, 0, 1]]}, "spans"),
+        ]
+        for changes, field in cases:
+            with self.subTest(changes=changes):
+                self.write_rows([record(label=1, techniques=["novel"], spans=None) | changes])
+                with self.assertRaisesRegex(ValueError, field) as error:
+                    self.run_normalize()
+                self.assertNotIn(record()["text"], str(error.exception))
+
+    def test_multi_turn_validation_even_without_spans(self):
+        for text in ("invalid", "{}", '[1]', '[{"role":"system","content":"x"}]',
+                     '[{"role":"user","content":1}]', '[{"role":"user"}]'):
+            self.write_rows([record(channel="multi_turn", text=text)])
+            with self.assertRaisesRegex(ValueError, "text.*multi_turn"):
+                self.run_normalize()
+        text = json.dumps([{"role": "user", "content": "a"},
+                           {"role": "assistant", "content": "longer"}])
+        for spans in ([[0, 0, 2]], [[1, 0, 1], [0, 0, 1]]):
+            self.write_rows([record(label=1, techniques=["novel"], channel="multi_turn",
+                                    text=text, spans=spans)])
+            with self.assertRaisesRegex(ValueError, "spans"):
+                self.run_normalize()
+
+    def test_v1_is_rejected_clearly(self):
+        row = record()
+        for field in ("channel", "techniques", "spans"):
+            del row[field]
+        self.write_rows([row])
+        with self.assertRaisesRegex(ValueError, "schema version 1.*version 2"):
+            self.run_normalize()
+
+    def test_mapping_allows_null_spans_default(self):
+        defaults = record(label=1, techniques=["novel"], spans=None)
+        del defaults["text"]
+        self.write_rows([{"body": "Synthetic fixture"}])
+        self.run_normalize(mapping={"fields": {"text": "body"}, "defaults": defaults})
+        self.assertIsNone(json.loads(self.output.read_text())["spans"])
 
     def test_duplicate_ids_require_evaluator_resolution(self):
         self.write_rows([record(), record()])

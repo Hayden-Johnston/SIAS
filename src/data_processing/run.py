@@ -107,9 +107,9 @@ def prepare(config_path):
     dataset_path = base / config["dataset"]
     dataset_manifest_path = base / config["dataset_manifest"]
     dataset_manifest = load_json(dataset_manifest_path)
-    if (not isinstance(dataset_manifest, dict) or dataset_manifest.get("schema_version") != 1
+    if (not isinstance(dataset_manifest, dict) or dataset_manifest.get("schema_version") != 2
             or dataset_manifest.get("output_sha256") != digest(dataset_path)):
-        raise ValueError("dataset manifest version/checksum mismatch")
+        raise ValueError("dataset manifest version/checksum mismatch; schema version 2 required")
     rows, ids = [], set()
     for line, row in read_rows(dataset_path):
         try:
