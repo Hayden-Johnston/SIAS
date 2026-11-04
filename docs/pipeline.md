@@ -9,7 +9,7 @@ attacks, and reduce rules where better classifier weights allow.
 ## Stages (order decided by measurement, not assumption)
 
 normalize (unicode, homoglyphs, zero-width, common encodings) -> NLP and regex -> activation probe ->
-system one models (Clef, Laya, Mica, Maya, d1, plus decision models found in the inventory).
+system one models (Clef, Laya, Mica, d1, plus decision models found in the inventory).
 Jev is out of scope until later.
 
 - NLP is expected to matter more than regex. Use both to avoid extra inference passes.
