@@ -71,7 +71,7 @@ class Worker:
         temp.replace(path)
 
     @staticmethod
-    def build_questions(self, ctx=None):
+    def build_questions(ctx=None):
         """Build questions set for system one model"""
         questions = {}
         questions["safety"] = {"type": "noul", 

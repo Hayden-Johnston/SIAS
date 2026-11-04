@@ -49,8 +49,8 @@ def read(path):
     return fields
 
 
-def tickets():
-    return [read(p) for p in sorted(TICKETS.glob("*.md"))]
+def tickets(directory=None):
+    return [read(p) for p in sorted((directory or TICKETS).glob("*.md"))]
 
 
 def find(tid):

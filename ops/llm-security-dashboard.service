@@ -1,0 +1,11 @@
+[Unit]
+Description=llm-security read-only dashboard
+
+[Service]
+Type=simple
+WorkingDirectory=%h/llm_security
+ExecStart=/usr/bin/python3 %h/llm_security/dashboard/server.py --port 8300
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
