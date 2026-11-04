@@ -89,6 +89,31 @@ function showRun(run) {
 }
 
 function renderMetrics(runs) {
+  const sliceSelect = document.querySelector('#slice-run');
+  const previousSlice = sliceSelect.selectedOptions[0]?.textContent;
+  sliceSelect.replaceChildren();
+  runs.forEach((run, index) => {
+    const option = el('option', `${run.run_id} · ${pacific(run.timestamp)}`);
+    option.value = String(index); sliceSelect.append(option);
+    if (option.textContent === previousSlice) option.selected = true;
+  });
+  const showSlices = () => {
+    const table = document.querySelector('#metric-slices'); table.replaceChildren();
+    const run = runs[Number(sliceSelect.value)];
+    for (const [field, groups] of Object.entries(run?.slices ?? {})) {
+      for (const [name, slice] of Object.entries(groups)) {
+        const row = el('tr');
+        for (const value of [field.replace('by_', '').replace('_', ' '), name,
+          `${slice.n}${slice.small_sample ? ' · small sample (n<20)' : ''}`,
+          rateLabel(slice.detection), rateLabel(slice.false_positive)]) row.append(el('td', value));
+        table.append(row);
+      }
+    }
+    document.querySelector('#no-slices').textContent = table.children.length ? '' : 'No slice metrics in this run';
+  };
+  sliceSelect.disabled = !runs.length;
+  sliceSelect.onchange = showSlices;
+  showSlices();
   const select = document.querySelector('#selected-run');
   const previous = select.selectedOptions[0]?.textContent;
   select.replaceChildren();

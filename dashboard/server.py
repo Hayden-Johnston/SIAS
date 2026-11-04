@@ -66,6 +66,16 @@ def manifest_fields(record):
                               for key in ("detection", "false_positive")})
     result["attack_distribution"] = {text(key): number(value, integer=True)
                                      for key, value in record["attack_distribution"].items()}
+    result["slices"] = {}
+    for field in ("channel", "length_bucket", "technique", "attack_family"):
+        result["slices"]["by_" + field] = {
+            text(name): {
+                "n": number(value["n"], integer=True),
+                "small_sample": number(value["n"], integer=True) < 20,
+                **{key: rate(value[key]) for key in ("detection", "false_positive")},
+            }
+            for name, value in record.get("slices", {}).get("by_" + field, {}).items()
+        }
     result["stages"] = []
     for stage in record["stages"]:
         result["stages"].append({

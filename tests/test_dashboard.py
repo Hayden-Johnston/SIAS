@@ -166,6 +166,25 @@ def test_empty_rates_and_zero_reached_stage(tmp_path):
     assert result["stages"][0]["cached_latency_ms_mean"] is None
 
 
+def test_slice_projection_and_older_manifests(tmp_path):
+    from data_processing.run import sliced_metrics
+
+    record = synthetic_manifest()
+    assert dashboard.manifest_fields(record)["slices"]["by_technique"] == {}
+    record["slices"] = sliced_metrics([
+        {"label": 1, "detected": True, "channel": "direct", "length_bucket": "0-4096",
+         "techniques": ["novel", "encoding"], "attack_family": "synthetic-family"},
+    ])
+    record["slices"]["by_technique"]["novel"]["text"] = "DO NOT EXPOSE"
+    write_manifest(tmp_path, record=record)
+    result = dashboard.run_metrics(tmp_path)[0]
+    group = result["slices"]["by_technique"]["novel"]
+    assert group["n"] == 1 and group["small_sample"] is True
+    assert group["detection"] == record["slices"]["by_technique"]["novel"]["detection"]
+    assert group["false_positive"]["value"] is None
+    assert "DO NOT EXPOSE" not in json.dumps(result)
+
+
 def test_configured_runs_http_and_static_assets(tmp_path):
     runs = tmp_path / "configured-runs"
     for index in range(3):

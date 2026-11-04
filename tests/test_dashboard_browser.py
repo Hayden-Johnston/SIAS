@@ -69,6 +69,39 @@ def test_manifest_views_render(endpoint):
             browser.close()
 
 
+def test_metric_slices(endpoint):
+    from data_processing.run import sliced_metrics
+
+    root, url = endpoint
+    record = synthetic_manifest()
+    record['slices'] = sliced_metrics([
+        {'label': 1, 'detected': False, 'channel': 'direct', 'length_bucket': '0-4096',
+         'techniques': ['novel', 'encoding'], 'attack_family': '<img src=x>'},
+    ])
+    write_manifest(root / 'runs', record=record)
+    with playwright.sync_playwright() as browser_tools:
+        browser = browser_tools.chromium.launch(args=['--no-sandbox'])
+        page = browser.new_page()
+        try:
+            page.goto(url + '/#metrics')
+            page.wait_for_selector('#metric-slices tr')
+            assert page.locator('#metric-slices tr').count() == 5
+            assert 'small sample (n<20)' in page.locator('#metric-slices').inner_text()
+            assert 'n=1' in page.locator('#metric-slices').inner_text()
+            assert 'encoding' in page.locator('#metric-slices').inner_text()
+            assert 'novel' in page.locator('#metric-slices').inner_text()
+            assert page.locator('#metric-slices img').count() == 0
+            write_manifest(root / 'runs', 1)
+            page.evaluate('refresh()')
+            page.wait_for_function("document.querySelectorAll('#slice-run option').length === 2")
+            assert page.locator('#metric-slices tr').count() == 5
+            page.locator('#slice-run').select_option('0')
+            assert page.locator('#metric-slices tr').count() == 0
+            assert page.locator('#no-slices').inner_text() == 'No slice metrics in this run'
+        finally:
+            browser.close()
+
+
 def test_pages_and_activity(endpoint):
     import json
 

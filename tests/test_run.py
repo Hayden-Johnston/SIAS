@@ -102,6 +102,46 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(weighted["metrics"]["false_positive"], rate(0, 2))
         self.assertNotEqual(weighted["identity_sha256"], baseline["identity_sha256"])
 
+    def test_slices_include_empty_and_multiple_techniques(self):
+        path = self.root / "dataset.jsonl"
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[0]["techniques"] = ["novel", "encoding"]
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        manifest_path = self.root / "dataset.manifest.json"
+        dataset_manifest = json.loads(manifest_path.read_text())
+        dataset_manifest["output_sha256"] = digest(path)
+        manifest_path.write_text(json.dumps(dataset_manifest))
+        manifest = self.replay()
+        slices = manifest["slices"]
+        self.assertEqual(slices["by_channel"]["direct"],
+                         manifest["metrics"] | {"n": 4, "small_sample": True})
+        self.assertEqual(slices["by_length_bucket"]["0-4096"],
+                         slices["by_channel"]["direct"])
+        techniques = slices["by_technique"]
+        self.assertEqual(list(techniques), ["encoding", "novel"])
+        self.assertEqual(techniques["encoding"]["detection"], rate(1, 1))
+        self.assertEqual(techniques["novel"]["detection"], rate(1, 2))
+        self.assertEqual(techniques["novel"]["false_positive"], rate(0, 0))
+        self.assertEqual(techniques["novel"]["n"], 2)
+        self.assertEqual(slices["by_attack_family"]["fixture"], techniques["novel"])
+        self.assertEqual(slices["by_attack_family"]["benign"]["false_positive"], rate(1, 2))
+
+    def test_empty_slices_and_small_sample_boundary(self):
+        self.assertEqual(run.sliced_metrics([]), {
+            "by_channel": {}, "by_length_bucket": {}, "by_technique": {},
+            "by_attack_family": {},
+        })
+        row = {"label": 0, "detected": False, "channel": "direct", "techniques": [],
+               "length_bucket": "0-4096", "attack_family": "benign"}
+        for n in (19, 20):
+            slices = run.sliced_metrics([row] * n)
+            self.assertEqual(slices["by_technique"], {})
+            group = slices["by_channel"]["direct"]
+            self.assertEqual(group["n"], n)
+            self.assertEqual(group["small_sample"], n < 20)
+            self.assertEqual(group["detection"], rate(0, 0))
+            self.assertEqual(group["false_positive"], rate(0, n))
+
     def test_empty_conversation_chunk_score(self):
         row = {"id": "empty", "label": 0, "turn_lengths": [], "spans": []}
         stage = {"name": "test", "threshold": 0.5, "chunk_chars": 8, "overlap_chars": 2}

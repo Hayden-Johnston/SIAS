@@ -54,6 +54,8 @@ per-stage latency, and chunk location rates. Replay evaluates every stage on eve
 reports independent stage metrics alongside max-fused detection and false positives; optional
 weights and a fusion threshold live in the run JSON config. Complete stage caches are required
 ([fusion settings](docs/pipeline.md#replay-stage-fusion)). See [docs/runs.md](docs/runs.md).
+Run manifests and dashboard Metrics also break down fused detection and false positives by
+channel, length, technique and attack family, keeping small samples visible with a warning.
 
 ### The red-team loop
 
