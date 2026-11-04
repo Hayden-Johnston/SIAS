@@ -109,11 +109,11 @@ are derived from them deterministically, so no chunk files are stored and a run 
   The last window is aligned to the end of the turn. Turns no longer than `chunk_chars` are one chunk.
   Both values are per-stage run configuration recorded in the run manifest, chosen to fit the stage
   model's input limit and tuned by measurement in `docs/pipeline.md`.
-- A chunk is positive if it intersects any span. A span longer than `overlap_chars` can never fit
+- A chunk is positive if it intersects any span. A span longer than `overlap_chars` is not guaranteed to fit
   entirely in one chunk; the run manifest reports how many such spans there are.
 - Row score is the maximum chunk score, so row-level detection and false-positive metrics are
-  unchanged by chunking. Chunk scores are cached per `(row id, turn, start)` with the existing per-row
-  score cache.
+  unchanged for rows that fit in one chunk with the same cached score. Chunk scores are cached per
+  `(row id, turn, start)` with the existing per-row score cache.
 - Location: an attack row is located if its highest-scoring chunk is positive. Location rate is
   reported over attack rows with known spans, by channel and length bucket.
 

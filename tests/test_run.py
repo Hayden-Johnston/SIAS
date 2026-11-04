@@ -206,6 +206,138 @@ class ReplayTests(unittest.TestCase):
         self.assertNotIn("Synthetic fixture text", result.stdout + result.stderr)
 
 
+class ChunkReplayTests(unittest.TestCase):
+    setUp = ReplayTests.setUp
+    add_stage = ReplayTests.add_stage
+    save_config = ReplayTests.save_config
+    replay = ReplayTests.replay
+
+    def chunk_stage(self, chunk_chars=8, overlap_chars=2):
+        self.config["stages"] = self.config["stages"][:1]
+        stage = self.config["stages"][0]
+        stage.update(chunk_chars=chunk_chars, overlap_chars=overlap_chars)
+        return stage
+
+    def write_cache(self, entries):
+        stage = self.config["stages"][0]
+        path = self.root / stage["cache"]
+        path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+        stage["cache_sha256"] = digest(path)
+        self.save_config()
+
+    def test_windows_end_alignment_and_empty_turn(self):
+        self.assertEqual(run.windows(17, 8, 2), [(0, 8), (6, 14), (9, 17)])
+        self.assertEqual(run.windows(8, 8, 2), [(0, 8)])
+        self.assertEqual(run.windows(0, 8, 2), [(0, 0)])
+        self.assertEqual(run.windows(16, 8, 0), [(0, 8), (8, 16)])
+
+    def test_single_chunk_metrics_equivalent_to_row_cache(self):
+        before = self.replay()
+        for stage in self.config["stages"]:
+            stage.update(chunk_chars=100, overlap_chars=10)
+            path = self.root / stage["cache"]
+            entries = [json.loads(line) | {"turn": 0, "start": 0}
+                       for line in path.read_text().splitlines()]
+            path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+            stage["cache_sha256"] = digest(path)
+        self.save_config()
+        after = self.replay()
+        self.assertEqual(before["metrics"], after["metrics"])
+        for old, new in zip(before["stages"], after["stages"]):
+            for key in old:
+                self.assertEqual(old[key], new[key])
+        self.assertEqual(after["stages"][0]["location"]["overall"], rate(0, 0))
+
+    def test_multi_turn_boundary_location_and_replay(self):
+        source = self.root / "source.jsonl"
+        rows = [json.loads(line) for line in source.read_text().splitlines()]
+        rows[0].update(channel="multi_turn", text=json.dumps([
+            {"role": "user", "content": "x" * 17},
+            {"role": "assistant", "content": "y" * 3}]), spans=[[0, 7, 10], [1, 0, 1]])
+        rows[1].update(channel="document", text="z" * 4097)
+        rows[2].update(channel="email", text="w" * 16385, spans=[[0, 0, 1]])
+        source.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        normalize(source, self.root / "dataset.jsonl", self.root / "dataset.manifest.json")
+        self.chunk_stage()
+        entries = []
+        for row in rows:
+            turns = ([message["content"] for message in json.loads(row["text"])]
+                     if row["channel"] == "multi_turn" else [row["text"]])
+            for turn, text in enumerate(turns):
+                for start, _ in run.windows(len(text), 8, 2):
+                    score = 0.9 if (row["id"], turn, start) == ("0", 0, 6) else 0.1
+                    if row["id"] == "2" and start == 6:
+                        score = 0.4  # Highest chunk misses the known span, below threshold.
+                    entries.append({"id": row["id"], "turn": turn, "start": start,
+                                    "score": score, "latency_ms": 2})
+        self.write_cache(entries)
+        manifest = self.replay()
+        stage = manifest["stages"][0]
+        self.assertEqual(stage["location"]["overall"], rate(1, 2))
+        self.assertEqual(stage["location"]["by_channel"]["multi_turn"], rate(1, 1))
+        self.assertEqual(stage["location"]["by_channel"]["email"], rate(0, 1))
+        self.assertEqual(stage["location"]["by_length_bucket"]["0-4096"], rate(1, 1))
+        self.assertEqual(stage["location"]["by_length_bucket"]["16385+"], rate(0, 1))
+        self.assertEqual(stage["spans_longer_than_overlap"], 1)
+        self.assertEqual(stage["cached_latency_ms_total"], 2 * len(entries))
+        results = [json.loads(line) for line in
+                   (self.run_directory / "results.jsonl").read_text().splitlines()]
+        self.assertEqual(results[0]["stages"][0]["best_chunk"], [0, 6, 14])
+        self.assertEqual(results[1]["length_bucket"], "4097-16384")
+        self.assertNotIn("turn_lengths", results[0])
+        before = {p.name: p.read_bytes() for p in self.run_directory.iterdir()}
+        self.write_cache(list(reversed(entries)))
+        # The cache hash changes run identity, but result selection ignores file order.
+        reordered = self.replay()
+        self.assertEqual(manifest["results_sha256"], reordered["results_sha256"])
+        self.write_cache(entries)
+        self.assertEqual(manifest, self.replay())
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.run_directory.iterdir()})
+        self.write_cache(entries[1:])
+        with self.assertRaisesRegex(ValueError, "missing required cached score"):
+            self.replay()
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.run_directory.iterdir()})
+
+    def test_chunk_validation(self):
+        self.chunk_stage()
+        valid = {"id": "0", "turn": 0, "start": 0, "score": 0.5, "latency_ms": 1}
+        for field, value in [("turn", True), ("turn", -1), ("turn", 1),
+                             ("start", True), ("start", 1), ("start", -1)]:
+            self.write_cache([valid | {field: value}])
+            with self.assertRaisesRegex(ValueError, "invalid chunk coordinates"):
+                self.replay()
+        self.write_cache([valid, valid])
+        with self.assertRaisesRegex(ValueError, "duplicate id/chunk"):
+            self.replay()
+        for chunk, overlap in [(0, 0), (8, 8), (8, -1), (True, 0), (8, 1.5)]:
+            self.config["stages"][0].update(chunk_chars=chunk, overlap_chars=overlap)
+            self.save_config()
+            with self.assertRaisesRegex(ValueError, "chunk_chars"):
+                self.replay()
+
+    def test_unreached_chunk_stage_needs_no_scores(self):
+        self.config["stages"][0]["threshold"] = 0
+        stage = self.config["stages"][1]
+        path = self.root / stage["cache"]
+        path.write_text("")
+        stage.update(chunk_chars=8, overlap_chars=2, cache_sha256=digest(path))
+        self.save_config()
+        stage_result = self.replay()["stages"][1]
+        self.assertEqual(stage_result["reached"], 0)
+        self.assertEqual(stage_result["location"]["overall"], rate(0, 0))
+        self.assertEqual(stage_result["spans_longer_than_overlap"], 0)
+
+    def test_location_intersection_and_ties(self):
+        row = {"id": "x", "label": 1, "turn_lengths": [12], "spans": [[0, 8, 9]]}
+        stage = {"name": "test", "threshold": 0.5, "chunk_chars": 8, "overlap_chars": 0}
+        cache = {("x", 0, start): {"score": 0.4, "latency_ms": 1} for start in (0, 4)}
+        result = run.evaluate(row, [(stage, cache)])["stages"][0]
+        self.assertEqual(result["best_chunk"], [0, 0, 8])
+        self.assertFalse(result["located"])  # Touching the end is not an intersection.
+        row["spans"] = [[0, 7, 9]]
+        self.assertTrue(run.evaluate(row, [(stage, cache)])["stages"][0]["located"])
+
+
 
 class MetricTests(unittest.TestCase):
     def test_wilson_interval_matches_known_case(self):
