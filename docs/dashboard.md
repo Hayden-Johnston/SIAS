@@ -29,3 +29,16 @@ Clean and quiet. One page with tabs or sections, generous spacing, one typeface,
 Same color for the same metric across every chart; fixed semantic colors for TP, FP, FN, TN that are
 color-blind safe. Label lines directly instead of relying on legends. Light and dark themes.
 No 3D, gradients, or rainbow palettes.
+
+## Board dashboard v0
+
+Run `python3 dashboard/server.py` from the checkout (stdlib only). It binds to `0.0.0.0:8300`;
+use `--port` to change the port and `--board /path/to/board` to inspect another board.
+Open `/` for the page or `/api/state` for JSON. The page refreshes every 30 seconds and follows the
+system theme, with a button to switch themes. It shows ticket headers, running agent records and
+completed agent history; run metrics remain a placeholder. Duration is measured in seconds from the
+recorded start and end timestamps. Missing board files produce empty views; incomplete JSON records
+are skipped until the next refresh. Agent logs and payload files are never opened.
+
+`ops/llm-security-dashboard.service` is a systemd user unit for an integration checkout at
+`%h/llm_security`; installation and startup are left to the integrator.

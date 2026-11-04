@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llm-security · Board</title>
+<style>
+:root { color-scheme: light dark; --bg: #f7f8fa; --card: #fff; --ink: #202936; --muted: #586575; --line: #d4dae2; }
+@media (prefers-color-scheme: dark) { :root { --bg: #151a21; --card: #202731; --ink: #edf0f4; --muted: #adb8c5; --line: #445061; } }
+:root[data-theme="light"] { color-scheme: light; --bg: #f7f8fa; --card: #fff; --ink: #202936; --muted: #586575; --line: #d4dae2; }
+:root[data-theme="dark"] { color-scheme: dark; --bg: #151a21; --card: #202731; --ink: #edf0f4; --muted: #adb8c5; --line: #445061; }
+* { box-sizing: border-box; } body { margin: 0 auto; padding: 2rem; max-width: 1500px; font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; } h1 { font-size: 1.5rem; } h2 { font-size: 1.15rem; } h3 { font-size: 1rem; margin-top: 0; }
+section { margin-top: 2.5rem; } button { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 5px; padding: .4rem .8rem; cursor: pointer; }
+#board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1rem; } .column { min-width: 0; } article { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; margin-bottom: .8rem; overflow-wrap: anywhere; }
+p { margin: .4rem 0; } .muted, small { color: var(--muted); } .table-wrap { overflow-x: auto; } table { width: 100%; border-collapse: collapse; text-align: left; } th, td { padding: .7rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+@media (max-width: 850px) { #board { grid-template-columns: repeat(2, minmax(0, 1fr)); } body { padding: 1rem; } }
+@media (max-width: 450px) { #board { grid-template-columns: 1fr; } }
+</style>
+<header><h1>llm-security</h1><button id="theme" type="button">Toggle theme</button></header>
+<p id="refresh" class="muted" role="status">Loading board…</p>
+<section><h2>Board</h2><div id="board"></div></section>
+<section><h2>Running agents</h2><div id="running"></div></section>
+<section><h2>Agent run history</h2><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Mode</th><th>Ticket</th><th>Start</th><th>Duration</th><th>Exit</th></tr></thead><tbody id="history"></tbody></table></div><p id="no-history" class="muted"></p></section>
+<section><h2>Run metrics</h2><p class="muted">Run manifest metrics will appear here in a later version.</p></section>
+<script>
+const el = (tag, value, className) => { const node = document.createElement(tag); if (value !== undefined) node.textContent = value; if (className) node.className = className; return node; };
+document.querySelector('#theme').onclick = () => {
+  const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.dataset.theme = dark ? 'light' : 'dark';
+};
+async function refresh() {
+  try {
+    const response = await fetch('/api/state');
+    if (!response.ok) throw new Error('State unavailable');
+    const data = await response.json();
+    const board = document.querySelector('#board'); board.replaceChildren();
+    for (const [status, tickets] of Object.entries(data.columns)) {
+      const column = el('div', undefined, 'column'); column.append(el('h3', `${status} · ${data.counts[status]}`));
+      for (const ticket of tickets) {
+        const card = el('article'); card.append(el('small', `#${ticket.id} · ${ticket.owner} · P${ticket.priority}`), el('p', ticket.title)); column.append(card);
+      }
+      if (!tickets.length) column.append(el('p', 'No tickets', 'muted'));
+      board.append(column);
+    }
+    const running = document.querySelector('#running'); running.replaceChildren();
+    for (const run of data.running) running.append(el('article', `${run.agent} · ${run.mode} · ticket ${run.ticket} · started ${run.start}`));
+    if (!data.running.length) running.append(el('p', 'No agents running', 'muted'));
+    const history = document.querySelector('#history'); history.replaceChildren();
+    for (const run of data.history) {
+      const row = el('tr');
+      for (const value of [run.agent, run.mode, run.ticket, run.start, run.duration == null ? '—' : `${run.duration.toFixed(1)} s`, run.exit ?? '—']) row.append(el('td', value));
+      history.append(row);
+    }
+    document.querySelector('#no-history').textContent = data.history.length ? '' : 'No completed agent runs';
+    document.querySelector('#refresh').textContent = `Updated ${new Date().toLocaleTimeString()} · refreshes every 30 seconds`;
+  } catch { document.querySelector('#refresh').textContent = 'Unable to refresh. Retrying in 30 seconds.'; }
+}
+refresh(); setInterval(refresh, 30000);
+</script>
+</html>
