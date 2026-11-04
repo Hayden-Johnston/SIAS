@@ -31,8 +31,11 @@ CODEX_GITDIR = WT / "codex-gitdir"
 OWNERS = {"claude", "codex", "user"}
 STATUSES = {"todo", "doing", "review", "done", "blocked"}
 RUN_TIMEOUT = "3h"  # longer runs are assumed stuck
-MAX_RUNS_PER_DAY = {"claude": 30, "codex": 40}  # runaway-loop guard; ~1 run per 30-40 min
-PLAN_INTERVAL = dt.timedelta(hours=1)  # at most one planning run per hour
+# Budget: both agents are on $20 plans, so runs are few, spaced out, and use cheaper settings.
+MAX_RUNS_PER_DAY = {"claude": 8, "codex": 12}
+MIN_GAP = dt.timedelta(minutes=30)  # rest between an agent's runs
+FAIL_COOLDOWN = dt.timedelta(hours=2)  # after a failed run (often a usage limit), wait before retrying
+PLAN_INTERVAL = dt.timedelta(hours=3)  # at most one planning run per 3 hours
 MIN_CODEX_QUEUE = 2  # plan more work when Codex has fewer ready tickets than this
 ENV = {**os.environ, "PATH": f"{Path.home()}/.local/bin:/usr/local/bin:/usr/bin:/bin"}
 
@@ -118,11 +121,11 @@ def launch(agent, mode, ticket):
     prompt = prompt.replace("$TICKET", str(ticket["path"]) if ticket else "").replace("$REPO", str(REPO))
     prompt = prompt.replace("$WT", str(WT))
     if agent == "codex":
-        cmd = ["codex", "exec", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true",
+        cmd = ["codex", "exec", "-c", 'model_reasoning_effort="medium"', "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true",
                "--add-dir", str(CODEX_GITDIR), "--add-dir", str(BOARD), "--add-dir", str(Path.home() / ".cache" / "uv"),
                "-C", str(CODEX_CLONE), prompt]
     else:
-        cmd = ["claude", "-p", prompt, "--permission-mode", "auto", "--add-dir", str(WT)]  # --add-dir is variadic
+        cmd = ["claude", "-p", prompt, "--model", "sonnet", "--effort", "medium", "--permission-mode", "auto", "--add-dir", str(WT)]  # --add-dir is variadic
     exit_file = LOGS / f"{name}.exit"
     shell = 'timeout "$0" "$@"; echo $? > "$EXIT_FILE"'
     with (LOGS / f"{name}.log").open("w") as out:
@@ -169,12 +172,22 @@ def reap(agent):
     return False
 
 
+def resting(agent):
+    done = [r for r in runs() if r["agent"] == agent]
+    if not done:
+        return False
+    last = max(done, key=lambda r: r["end"])
+    wait = MIN_GAP if last["exit"] == 0 else FAIL_COOLDOWN
+    return now() - dt.datetime.fromisoformat(last["end"]) < wait
+
+
 def tick():
     if (BOARD / "STOP").exists():
         return
     ts = tickets()
     today = [r for r in runs() if r["start"][:10] == f"{now():%Y-%m-%d}"]
     capped = {a for a, cap in MAX_RUNS_PER_DAY.items() if sum(r["agent"] == a for r in today) >= cap}
+    capped |= {a for a in MAX_RUNS_PER_DAY if resting(a)}
 
     if not reap("codex") and "codex" not in capped:
         t = pick(ts, "codex")

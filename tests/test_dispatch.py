@@ -37,3 +37,14 @@ def test_rejects_unknown_status(board):
     dispatch.new("claude", "1", "x", [])
     with pytest.raises(SystemExit):
         dispatch.set_field("1", "status", "wip")
+
+
+def test_resting_after_recent_or_failed_run(tmp_path, monkeypatch):
+    runs = tmp_path / "runs.jsonl"
+    monkeypatch.setattr(dispatch, "RUNS", runs)
+    assert not dispatch.resting("codex")
+    ago = lambda **kw: (dispatch.now() - dispatch.dt.timedelta(**kw)).isoformat()
+    runs.write_text(f'{{"agent": "codex", "end": "{ago(minutes=40)}", "exit": 0}}\n')
+    assert not dispatch.resting("codex")
+    runs.write_text(f'{{"agent": "codex", "end": "{ago(minutes=40)}", "exit": 1}}\n')
+    assert dispatch.resting("codex")
