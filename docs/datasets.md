@@ -175,7 +175,36 @@ reports; do not inspect or display raw prompt corpora.
   families and all benign `group_id`s are assigned by a hash of the name, so adding data never moves
   existing rows. Each split reports its counts by channel and technique, so a gap (no `email` attacks
   in held-out, say) is visible before any number is quoted.
-- Dedupe near-duplicates before splitting.
+- Near-duplicate deduplication is a separate step and is out of scope for the split command.
 - Keep a held-out set that is never used for tuning.
 - The evaluator approves items into datasets and tracks label source. Only datasets marked publishable
   may be published; a row's `publishable: yes` alone is not approval.
+
+### Splitting
+
+Split a normalized file into train/dev/test/heldout JSONL files:
+
+```sh
+uv run python -m data_processing.split \
+  data/normalized/source.jsonl \
+  --manifest data/normalized/source.manifest.json \
+  --config split_config.json \
+  --output-dir data/splits/
+```
+
+The split config is a small JSON file:
+
+```json
+{
+  "heldout_families": ["family-a", "family-b"],
+  "proportions": {"train": 0.7, "dev": 0.15, "test": 0.15}
+}
+```
+
+Attack rows are assigned by `attack_family`; benign rows by `group_id`. Held-out families go to the
+`heldout` split. Other families and benign groups are assigned by SHA-256 of the name to train/dev/test
+according to the proportions. A `group_id` that spans multiple `attack_family` values is an error.
+
+Outputs: `train.jsonl`, `dev.jsonl`, `test.jsonl`, `heldout.jsonl`, and `split_manifest.json` in the
+output directory. The manifest contains per-split counts by label, channel, technique, and family, plus
+checksums. It contains no text. The command is deterministic and byte-identical on replay.
