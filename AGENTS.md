@@ -15,6 +15,8 @@ Claude Code and Codex both read this file. `CLAUDE.md` contains one line: `@AGEN
 - Deterministic, resumable, replayable workflows. A dataset run must not need inference unless a stage
   requires a model.
 - Do not overengineer, and do not let another agent do so in review.
+- The repo is public and should stay presentable: keep README.md accurate when user-facing behavior,
+  commands, datasets or status change. No internal hostnames, IPs or local paths in it.
 
 ## Roles
 
