@@ -1,8 +1,10 @@
 import json
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -159,3 +161,102 @@ def test_transport_failure_is_pending(tmp_path, server, monkeypatch):
     assert client.result(key)["status"] == "pending"
     assert client.result(key)["attempts"] == 2
     assert client.result(key)["error"] == "transport_error"
+
+
+@pytest.fixture
+def managed_client(tmp_path, server, monkeypatch):
+    import httpx
+
+    config = tmp_path / "evaluator.json"
+    config.write_text(json.dumps({"storage_dir": "state", "evaluator": {
+        "host": "127.0.0.1", "port": urlsplit(os.environ["MAYA_URL"]).port,
+        "gpus": [], "binary": "unused", "model": "unused"}}))
+    marker = tmp_path / "starts.jsonl"
+    stub = tmp_path / "servers_stub.py"
+    stub.write_text("import json, sys\nfrom pathlib import Path\n"
+                    f"with Path({str(marker)!r}).open('a') as output:\n"
+                    "    output.write(json.dumps(sys.argv[1:]) + '\\n')\n")
+    client = Client(tmp_path / "managed.sqlite", model_sets={"judge": "evaluator"},
+                    server_config=config, timeout=5)
+    client.server_script = stub
+    monkeypatch.setattr(httpx.Client, "get", lambda *args, **kwargs:
+                        httpx.Response(200 if marker.exists() else 503))
+    return client, config, marker, stub
+
+
+def test_managed_model_starts_once_groups_and_replays(managed_client, server):
+    client, config, marker, _ = managed_client
+    calls, _ = server
+    first = client.submit_batch("judge", [MESSAGES])[0]
+    client.submit_batch("other", [MESSAGES])
+    second = client.submit_batch("judge", [MESSAGES + MESSAGES])[0]
+    assert client.drain() == 3
+    assert [call[2]["model"] for call in calls] == ["judge", "judge", "other"]
+    assert [call[1] for call in calls] == [None, None, "Bearer fixture-key"]
+    assert [json.loads(line) for line in marker.read_text().splitlines()] == [
+        ["up", "evaluator", "--config", str(config)]]
+    assert all(client.result(key)["status"] == "done" for key in (first, second))
+    assert client.drain() == 0
+    assert len(marker.read_text().splitlines()) == 1
+
+
+def test_managed_model_already_ready(managed_client, server):
+    client, _, marker, _ = managed_client
+    marker.touch()
+    client.submit_batch("judge", [MESSAGES])
+    assert client.drain() == 1
+    assert marker.read_text() == ""
+
+
+@pytest.mark.parametrize("failure", ["command", "readiness"])
+def test_start_failure_fails_all_model_requests(managed_client, server, monkeypatch, failure):
+    import httpx
+
+    client, _, marker, stub = managed_client
+    if failure == "command":
+        with stub.open("a") as output:
+            output.write("raise SystemExit(1)\n")
+    else:
+        client.timeout = 0.05
+        monkeypatch.setattr(httpx.Client, "get", lambda *args, **kwargs: httpx.Response(503))
+    keys = client.submit_batch("judge", [MESSAGES, MESSAGES + MESSAGES])
+    other = client.submit_batch("other", [MESSAGES])[0]
+    error = "server_start_failed" if failure == "command" else "server_start_timeout"
+    with pytest.raises(ProxyError, match=error):
+        client.drain()
+    for key in keys:
+        assert client.result(key)["status"] == "failed"
+        assert client.result(key)["error"] == error
+        assert client.result(key)["attempts"] == 0
+    assert client.result(other)["status"] == "pending"
+    assert len(marker.read_text().splitlines()) == 1
+    assert server[0] == []
+
+
+def test_managed_concurrent_drainers_start_once(managed_client, server):
+    client, config, marker, stub = managed_client
+    other = Client(client.path, model_sets=client.model_sets, server_config=config)
+    other.server_script = stub
+    client.submit_batch("judge", [MESSAGES, MESSAGES + MESSAGES])
+    with ThreadPoolExecutor(2) as pool:
+        assert sum(pool.map(lambda queued: queued.drain(), [client, other])) == 2
+    assert len(marker.read_text().splitlines()) == 1
+    assert len(server[0]) == 2
+
+
+@pytest.mark.parametrize("field,value", [("set", "maya"), ("port", 8099),
+                                        *[("gpus", [gpu]) for gpu in range(7)]])
+def test_managed_model_refuses_protected_sets(managed_client, server, field, value):
+    client, config_path, marker, _ = managed_client
+    if field == "set":
+        client.model_sets["judge"] = value
+    else:
+        config = json.loads(config_path.read_text())
+        config["evaluator"][field] = value
+        config_path.write_text(json.dumps(config))
+    keys = client.submit_batch("judge", [MESSAGES, MESSAGES + MESSAGES])
+    with pytest.raises(ProxyError, match="server_set_refused"):
+        client.drain()
+    assert all(client.result(key)["error"] == "server_set_refused" for key in keys)
+    assert not marker.exists()
+    assert server[0] == []

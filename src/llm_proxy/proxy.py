@@ -1,10 +1,12 @@
-"""Persistent chat queue and cache; no server lifecycle management."""
+"""Persistent chat queue and cache with opt-in CPU evaluator startup."""
 
 import fcntl
 import hashlib
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,7 +28,7 @@ class Client:
     """Explicit base_url/api_key select another server without inheriting Maya credentials."""
 
     def __init__(self, path, *, env_file=".env", timeout=300, attempts=3, backoff=1,
-                 base_url=None, api_key=None):
+                 base_url=None, api_key=None, model_sets=None, server_config=None):
         if attempts < 1 or backoff < 0 or timeout <= 0:
             raise ValueError("Invalid retry or timeout settings")
         settings = dotenv_values(env_file) | os.environ
@@ -36,6 +38,10 @@ class Client:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.timeout, self.attempts, self.backoff = timeout, attempts, backoff
+        self.model_sets = dict(model_sets or {})
+        self.server_script = Path(__file__).resolve().parents[2] / "ops/servers.py"
+        self.server_config = Path(server_config) if server_config is not None else (
+            self.server_script.parent.parent / "evaluator.local.json")
         with self._db() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS jobs (
                 key TEXT PRIMARY KEY, request TEXT NOT NULL,
@@ -80,9 +86,48 @@ class Client:
         return {"status": row[0], "response": json.loads(row[1]) if row[1] else None,
                 "latency_seconds": row[2], "attempts": row[3], "error": row[4]}
 
-    def drain(self):
-        """Complete pending jobs FIFO, serially across drainers using this database.
+    def _model_url(self, http, model):
+        if model not in self.model_sets:
+            return self.url
+        if self.model_sets[model] != "evaluator":
+            raise ProxyError("server_set_refused")
+        try:
+            server = json.loads(self.server_config.read_text())["evaluator"]
+            host, port = server["host"], server["port"]
+            if (server["gpus"] != [] or type(port) is not int or
+                    not 1 <= port <= 65535 or port == 8099 or
+                    host not in ("localhost", "127.0.0.1", "::1")):
+                raise ProxyError("server_set_refused")
+        except (OSError, ValueError, KeyError, TypeError):
+            raise ProxyError("server_config_error") from None
+        url = f"http://{'[' + host + ']' if host == '::1' else host}:{port}"
 
+        def ready():
+            try:
+                return http.get(url + "/health", timeout=min(1, self.timeout)).is_success
+            except httpx.TransportError:
+                return False
+
+        if not ready():
+            try:
+                subprocess.run([sys.executable, str(self.server_script), "up", "evaluator",
+                                "--config", str(self.server_config)], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=self.timeout)
+            except (OSError, subprocess.SubprocessError):
+                raise ProxyError("server_start_failed") from None
+            deadline = time.monotonic() + self.timeout
+            while not ready():
+                if time.monotonic() >= deadline:
+                    raise ProxyError("server_start_timeout")
+                time.sleep(min(1, max(0, deadline - time.monotonic())))
+        return url + "/v1"
+
+    def drain(self):
+        """Complete pending jobs serially across drainers using this database.
+
+        Managed queues group by model; other queues retain FIFO ordering.
+        Startup errors fail all pending jobs for that model and stop this drain.
         Transient errors remain pending after exhaustion; a later drain can retry.
         Permanent errors/refusals are marked failed and stop this drain. A crash can
         repeat an in-flight HTTP request, but committed outputs are never requested again.
@@ -90,21 +135,38 @@ class Client:
         completed = 0
         with open(str(self.path) + ".lock", "a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            headers = {"Authorization": f"Bearer {self.key}"} if self.key else {}
-            with httpx.Client(timeout=self.timeout, headers=headers, trust_env=False) as http:
+            urls, active_model = {}, None
+            with httpx.Client(timeout=self.timeout, trust_env=False) as http:
                 while True:
                     with self._db() as db:
                         job = db.execute("""SELECT key, request FROM jobs
-                                            WHERE status = 'pending' ORDER BY rowid LIMIT 1""").fetchone()
+                                            WHERE status = 'pending'
+                                            ORDER BY json_extract(request, '$.model') = ? DESC,
+                                            rowid LIMIT 1""", (active_model,)).fetchone()
                     if job is None:
                         return completed
                     key, request = job
+                    model = json.loads(request)["model"]
+                    if self.model_sets:
+                        active_model = model
+                    if model not in urls:
+                        try:
+                            urls[model] = self._model_url(http, model)
+                        except ProxyError as exc:
+                            with self._db() as db:
+                                db.execute("""UPDATE jobs SET status = 'failed', error = ?
+                                    WHERE status = 'pending'
+                                    AND json_extract(request, '$.model') = ?""", (str(exc), model))
+                            raise
+                    headers = {"Content-Type": "application/json"}
+                    if model not in self.model_sets and self.key:
+                        headers["Authorization"] = f"Bearer {self.key}"
                     for attempt in range(self.attempts):
                         started = time.monotonic()
                         response, error, retry = None, None, False
                         try:
-                            reply = http.post(self.url + "/chat/completions",
-                                              content=request, headers={"Content-Type": "application/json"})
+                            reply = http.post(urls[model] + "/chat/completions",
+                                              content=request, headers=headers)
                             if reply.is_success:
                                 response = reply.json()
                                 choices = response.get("choices", [])

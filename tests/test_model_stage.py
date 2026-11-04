@@ -36,7 +36,7 @@ def stage(tmp_path, monkeypatch):
 
     def post(self, url, *, content, headers):
         request = json.loads(content)
-        calls.append((url, self.headers.get('Authorization'), request))
+        calls.append((url, headers.get('Authorization', self.headers.get('Authorization')), request))
         if replies:
             response = replies.pop(0)
             if isinstance(response, Exception):

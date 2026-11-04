@@ -144,7 +144,7 @@ existing temporary child-server workflow or manage Maya.
 
 `llm_proxy.Client` reads `MAYA_URL` (OpenAI API base URL ending in `/v1`) and
 `MAYA_API_KEY` from `.env`, with environment variables taking precedence. It only sends chat
-requests to an already running server.
+requests to an already running server by default. CPU evaluator startup is opt-in.
 
 ```python
 from llm_proxy import Client
@@ -159,7 +159,8 @@ client.drain()
 output = client.result(keys[0])
 ```
 
-Use one database per server: drainers sharing it serialize HTTP calls at concurrency 1.
+Use one database per endpoint/routing configuration: drainers sharing it serialize HTTP
+calls at concurrency 1.
 Submission persists immediately; duplicate model, messages and generation parameters reuse the
 same key. `drain()` processes pending jobs in submission order and returns the number completed.
 `result(key)` returns status (`pending`, `done`, `failed`), response, attempts, error code and
@@ -171,6 +172,22 @@ backoff; exhausted jobs remain pending for a later drain. Other HTTP errors, mal
 and explicit refusals are marked failed and raise `ProxyError`, stopping the drain without retrying
 that job. A crash during an HTTP call can repeat that call on resume. Streaming is unsupported.
 The database contains request and response text: keep it local and outside git.
+
+From a source checkout, opt into evaluator routing with
+`Client("caches/judge.sqlite", model_sets={"served-model-id": "evaluator"},
+server_config="evaluator.local.json")`. The config defaults to the checkout's
+`evaluator.local.json`, using the same format as `ops/servers.py`. Other models retain
+the client's normal endpoint. Managed queues drain requests grouped by model, preserving
+submission order within each group and processing groups in first-submitted order.
+The proxy checks the evaluator's `/health`, calls `ops/servers.py up evaluator` once
+per model per drain if needed, then waits up to the client timeout for readiness before
+sending chat calls. Startup commands have the same timeout. Healthy and fully cached
+queues need no startup. Evaluator requests never inherit Maya credentials.
+
+Only the CPU `evaluator` set is startable; other sets, GPU allocations and port 8099
+are refused. Configuration, startup and readiness errors fail every pending request for
+that model with a `server_*` error and raise `ProxyError`; other models remain pending.
+The proxy never shuts down a server or manages Maya's lifecycle.
 
 ### Scheduled iterations
 
