@@ -79,6 +79,9 @@ uv run ruff check                     # lint
 # Normalize a local JSONL source into the shared schema (no network, no inference)
 uv run python -m data_processing.normalize source.jsonl out.jsonl --manifest out.manifest.json
 
+# Capture hidden-state activations (CPU by default, resumable safetensors shards)
+uv run python -m data_processing.activations out.jsonl activations/dev --dataset-manifest out.manifest.json
+
 # Replay a scored run from cached stage outputs
 uv run python -m data_processing.run data/run-config.json runs/experiment-1
 
@@ -96,7 +99,7 @@ and put API keys in `.env`.
 
 | Path | Contents |
 |---|---|
-| `src/data_processing/` | Dataset schema, normalization, replayable scored runs, metrics |
+| `src/data_processing/` | Dataset schema, normalization, activation capture, replayable scored runs, metrics |
 | `src/llm_security/` | Detection pipeline and stages |
 | `src/llm_proxy/` | Client and queue for local model servers |
 | `dashboard/` | Read-only web dashboard (stdlib server, single page) |

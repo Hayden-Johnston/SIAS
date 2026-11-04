@@ -21,6 +21,37 @@
 - Check free space before a run and stop at a configured limit.
 - Sizing: ~180 KB per prompt per position across all layers at fp16 for a 4B-class model.
 
+### Activation capture CLI
+
+Install the optional `activations` dependency group (configured to use the CPU PyTorch wheel) and run `data_processing.activations`:
+
+```sh
+uv sync --extra activations
+uv run python -m data_processing.activations \
+  /mnt/storage/llm_security/normalized/dev.jsonl \
+  /mnt/storage/llm_security/activations/dev \
+  --dataset-manifest /mnt/storage/llm_security/normalized/dev.manifest.json \
+  --model hf-internal-testing/tiny-random-LlamaForCausalLM \
+  --layer-step 3 --dtype fp16 --per-token-fraction 0.05 --seed 0 \
+  --max-tokens 512 --device cpu --min-free-gb 20
+```
+
+- `--layer-step` (default `3`) selects every 3rd transformer layer (`0, 3, 6, ...`), or `--layers`
+  takes an explicit comma-separated layer list (for example `0,1`).
+- `--per-token-fraction` (default `0.05`) or `--per-token-count` (mutually exclusive), seeded by
+  `--seed` (default `0`), deterministically selects the prompt subset that also stores `per_token`
+  hidden states of shape `(num_layers, seq_len, hidden_size)`. Every shard stores `last_token` and
+  `mean_pooled` of shape `(num_layers, hidden_size)` in `fp16` (`--dtype`).
+- `--max-tokens` (default `512`) truncates longer tokenized inputs and records `truncated`,
+  `token_count`, and `raw_token_count` in both the shard `.safetensors` header and `index.json`.
+- Writes `shards/<id>.safetensors` and `index.json` atomically. Both the shard metadata header and
+  the index record `model_identity` (`repo_id`, `commit_hash`, `weights_sha256`), `tokenizer_version`,
+  `layers`, and `dtype`. Re-running skips IDs already present in `index.json` and refuses to append
+  if any identity field differs.
+- Checks free disk space on the target volume before starting and before writing each shard, stopping
+  cleanly (`"status": "stopped_disk_limit"`) when free space would fall below `--min-free-gb`
+  (default `20` GiB, or `--min-free-bytes`).
+
 ## Current milestone: end-to-end v0
 
 Done when one iteration runs unattended and its scores show on the dashboard; low scores are fine:
