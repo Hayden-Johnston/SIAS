@@ -1,6 +1,6 @@
 # Cached-output dataset runs
 
-The replay runner evaluates an ordered threshold cascade using local cached scores. It imports
+The replay runner evaluates independent stages and max fusion using local cached scores. It imports
 no model or network clients and never starts servers or calls inference. The existing online
 prototype entrypoint remains unchanged. Deterministic rule stages can also export scores into
 this cache contract; their production is separate from replay.
@@ -41,9 +41,10 @@ checkpoint/rules and configuration. The orchestrator or evaluator supplies these
 aligns scores to the correct dataset; a checksum alone does not prove semantic correctness.
 
 The dataset manifest from normalization pins the dataset bytes. All cache rows, schema fields,
-and checksums are validated before writing a run. For each prompt, stages execute in config order.
-A score greater than or equal to a stage's threshold catches the prompt and stops the cascade.
-Later stages need no cache entry for prompts caught earlier. Missing a score for a reached stage
+and checksums are validated before writing a run. For each prompt, all stages are evaluated in config order.
+Each stage uses its own threshold for independent metrics. Max fusion uses a separate threshold
+(default 0.5) and optional weights; see [fusion settings](pipeline.md#replay-stage-fusion).
+Every stage needs scores for every prompt. Missing a score
 fails the run; it does not implicitly download data, run a model, or mark the prompt benign.
 
 ## Chunk caches and location
@@ -57,9 +58,9 @@ non-multi-turn rows use turn 0. Chunk ends are derived, not stored in the cache.
 
 Each turn advances by `chunk_chars - overlap_chars`, with the final window aligned to
 the turn end, without duplicate starts. A short or empty turn has one window at start 0.
-No chunk crosses turns. Every chunk of a reached row must have a score, even if an early
+No chunk crosses turns. Every chunk of a row must have a score, even if an early
 chunk exceeds the threshold. Unknown coordinates and duplicate keys fail validation.
-Later cascade stages still need no scores for rows caught earlier. The row's stage score
+All stages need complete caches. The row's stage score
 is its maximum chunk score; stage latency sums all that row's chunk latencies.
 Single-chunk scores therefore preserve the existing row detection metrics.
 
@@ -72,7 +73,7 @@ not written to results.
 
 Each chunk stage in the manifest records both window settings, location rates overall,
 `by_channel` and `by_length_bucket`, and a count of spans longer than its overlap. These
-statistics cover **reached rows**; the location denominator is reached attack rows with
+statistics cover **all rows**; the location denominator is attack rows with
 non-null spans (including an empty known list, which cannot be located). Each rate uses
 the same Wilson interval and sample size contract as detection. Only observed location
 groups are included. Row-cache stages have no location statistics. Location is reported
@@ -81,7 +82,7 @@ per stage so scores from different classifiers are never compared.
 Length buckets are `0-4096`, `4097-16384`, and `16385+` Unicode characters: fixed short,
 medium and long bands at 4 Ki and 16 Ki characters, independent of stage window sizes.
 For multi-turn rows, length sums message content lengths and excludes JSON/role metadata.
-The manifest identity binds window configuration and runner version 2. Replay still uses
+The manifest identity binds window configuration and runner version 3. Replay still uses
 only supplied caches and never performs inference.
 
 ## Producing a rule/NLP cache
@@ -138,12 +139,13 @@ Measure it on approved development data before treating it as a detection contro
 
 ## Run files
 
-- `results.jsonl`: prompt IDs, labels/families, each reached stage's score and cached latency,
-  and final detection. It contains no text.
+- `results.jsonl`: prompt IDs, labels/families, each stage's score and cached latency,
+  the `fused_score`, and final fused detection. It contains no text.
 - `manifest.json`: completion marker with `identity_sha256` binding the config, runner version,
   dataset, manifest, cache hashes, thresholds, and chunk settings; `results_sha256` pins the results bytes.
   It includes outcome counts, rates, confidence intervals, attack distribution, stage score
-  summaries, caught/passed counts, and cached latency totals/means. No payload text or local paths.
+  summaries, independent per-stage and fused metrics, fusion settings, caught/passed counts,
+  and cached latency totals/means. No payload text or local paths.
 
 Replay computes all results in memory before writing either output. Each file is replaced
 atomically, results first and manifest last. Re-running recomputes and replaces the outputs,
@@ -174,7 +176,7 @@ datasets and establish family/group isolation, deduplication, label quality, and
 Do not treat unapproved fixture runs as evidence for merging detection controls. Dataset approval
 here is a provenance declaration, not a cryptographic attestation or an access-control mechanism.
 
-Stage latency is the original cached latency summed over reached prompts (all chunks for chunk
+Stage latency is the original cached latency summed over all prompts (all chunks for chunk
 stages), not the time to replay scores, and includes no claim about server loading, queue time, or current end-to-end inference.
 The dashboard can read aggregate `manifest.json`; it must not read normalized payload files.
 

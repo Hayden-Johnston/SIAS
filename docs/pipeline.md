@@ -104,6 +104,37 @@ cache replays without inference, including when the endpoint is offline. Detecti
 false positives still require measurement on approved held-out data; synthetic tests establish
 cache/replay behavior only.
 
+## Replay stage fusion
+
+The replay runner evaluates all configured stages on every row, without inference. Each row's
+`fused_score` is `max(weight[name] * stage_score)`; weights default to 1 and must be finite
+numbers in [0, 1]. Chunk stages first take their maximum chunk score. Fusion flags scores
+**greater than or equal to** its threshold (default 0.5). These scores are heuristic strengths,
+not calibrated probabilities. Optional settings go in the existing run JSON config:
+
+```json
+"fusion": {"threshold": 0.5, "weights": {"cpu-classifier": 0.8}}
+```
+
+Only configured stage names may appear in `weights`; omitted names keep weight 1. Each stage's
+existing `threshold` controls its independent verdict and metrics, without changing its raw score
+or the fusion threshold. Set stage thresholds in the `stages` array. A zero weight contributes
+zero, so a fusion threshold of zero flags every row, including rows with only zero scores.
+
+The manifest records each stage's `metrics` and `fusion.metrics`, with confusion counts,
+detection and false-positive rates, denominators and 95% Wilson intervals. Top-level `metrics`
+are the fused metrics. `evaluation_split: "held_out"` declares these as held-out results; the
+runner also supports train and validation runs and does not establish split hygiene or approval.
+Use approved held-out data to measure detection improvements; synthetic tests prove replay
+behavior only. Fusion settings are pinned in the run identity (runner version 3).
+
+Every stage now requires a complete cache for the supplied dataset, including rows caught by
+another stage. Missing scores fail before output replacement; no model calls fill gaps. Older
+sparse cascade caches must be completed separately before replay. `reached`, score summaries,
+chunk location and cached latency now cover all rows; latency sums describe cached stage work,
+not an early-exit cascade or replay runtime. An empty conversation has no chunks, stage score 0,
+zero cached latency and null location. Fusion never compares chunk coordinates across stages.
+
 ## Statistics
 
 Report confidence intervals and sample sizes with every rate, and state the attack distribution the

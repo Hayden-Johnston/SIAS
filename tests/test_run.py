@@ -31,7 +31,7 @@ class ReplayTests(unittest.TestCase):
                            "dataset_manifest": "dataset.manifest.json", "evaluation_split": "validation",
                            "stages": []}
         self.add_stage("first", [("0", 0.9), ("1", 0.1), ("2", 0.2), ("3", 0.1)])
-        self.add_stage("second", [("1", 0.9), ("2", 0.1), ("3", 0.1)])
+        self.add_stage("second", [("0", 0.1), ("1", 0.9), ("2", 0.1), ("3", 0.1)])
         self.config_path = self.root / "config.json"
         self.run_directory = self.root / "run"
         self.save_config()
@@ -49,17 +49,23 @@ class ReplayTests(unittest.TestCase):
     def replay(self):
         return replay(self.config_path, self.run_directory)
 
-    def test_cascade_counts_stage_latency_and_replay(self):
+    def test_max_fusion_stage_metrics_latency_and_replay(self):
+        self.config["evaluation_split"] = "held_out"
+        self.save_config()
         first = self.replay()
+        self.assertEqual(first["fusion"]["metrics"], first["metrics"])
+        for stage, counts in zip(first["stages"], [(1, 0, 1, 2), (0, 1, 2, 1)]):
+            self.assertEqual(tuple(stage["metrics"][key] for key in ("tp", "fp", "fn", "tn")),
+                             counts)
         self.assertEqual({key: first["metrics"][key] for key in ("tp", "fp", "fn", "tn")},
                          {"tp": 1, "fp": 1, "fn": 1, "tn": 1})
         self.assertEqual(first["metrics"]["detection"]["value"], 0.5)
         self.assertEqual(first["metrics"]["detection"]["n"], 2)
         self.assertEqual(first["metrics"]["false_positive"]["value"], 0.5)
         self.assertEqual(first["attack_distribution"], {"fixture": 2})
-        self.assertEqual([stage["reached"] for stage in first["stages"]], [4, 3])
+        self.assertEqual([stage["reached"] for stage in first["stages"]], [4, 4])
         self.assertEqual([stage["caught"] for stage in first["stages"]], [1, 1])
-        self.assertEqual([stage["cached_latency_ms_total"] for stage in first["stages"]], [8, 6])
+        self.assertEqual([stage["cached_latency_ms_total"] for stage in first["stages"]], [8, 8])
         results_before = (self.run_directory / "results.jsonl").read_bytes()
         before = (self.run_directory / "manifest.json").read_bytes()
         self.assertEqual(first, self.replay())
@@ -72,6 +78,51 @@ class ReplayTests(unittest.TestCase):
         for path in self.run_directory.iterdir():
             self.assertNotIn("Synthetic fixture text", path.read_text())
 
+    def test_weighted_max_and_independent_thresholds(self):
+        self.config["fusion"] = {"threshold": 0.45, "weights": {"second": 0.5}}
+        self.config["stages"][0]["threshold"] = 0.95
+        self.save_config()
+        manifest = self.replay()
+        self.assertEqual(manifest["stages"][0]["metrics"]["tp"], 0)
+        self.assertEqual(manifest["fusion"]["metrics"]["tp"], 1)
+        self.assertEqual(manifest["fusion"]["metrics"]["fp"], 1)  # Inclusive boundary.
+        results = [json.loads(line) for line in
+                   (self.run_directory / "results.jsonl").read_text().splitlines()]
+        self.assertEqual([row["fused_score"] for row in results], [0.9, 0.45, 0.2, 0.1])
+        before = {p.name: p.read_bytes() for p in self.run_directory.iterdir()}
+        self.assertEqual(manifest, self.replay())
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.run_directory.iterdir()})
+
+    def test_weight_can_suppress_false_positive(self):
+        baseline = self.replay()
+        self.config["fusion"] = {"weights": {"second": 0.5}}
+        self.save_config()
+        weighted = self.replay()
+        self.assertEqual(weighted["metrics"]["detection"], baseline["metrics"]["detection"])
+        self.assertEqual(weighted["metrics"]["false_positive"], rate(0, 2))
+        self.assertNotEqual(weighted["identity_sha256"], baseline["identity_sha256"])
+
+    def test_empty_conversation_chunk_score(self):
+        row = {"id": "empty", "label": 0, "turn_lengths": [], "spans": []}
+        stage = {"name": "test", "threshold": 0.5, "chunk_chars": 8, "overlap_chars": 2}
+        result = run.evaluate(row, [(stage, {})])
+        self.assertEqual(result["fused_score"], 0)
+        self.assertFalse(result["detected"])
+        self.assertEqual(result["stages"][0]["latency_ms"], 0)
+        self.assertIsNone(result["stages"][0]["located"])
+        self.assertEqual(run.evaluate(row, [(stage, {})], {"threshold": 0})["detected"], True)
+
+    def test_invalid_fusion_config(self):
+        for fusion in [[], {"method": "sum"}, {"threshold": True}, {"threshold": 1.1},
+                       {"weights": []}, {"weights": {"unknown": 1}},
+                       *({"weights": {"first": value}} for value in
+                         [True, -1, 1.1, float("nan"), float("inf")])]:
+            self.config["fusion"] = fusion
+            self.save_config()
+            with self.assertRaisesRegex(ValueError, "fusion"):
+                self.replay()
+        self.assertFalse(self.run_directory.exists())
+
     def test_changed_config_replaces_outputs(self):
         before = self.replay()
         self.config["stages"][1]["threshold"] = 0.95
@@ -79,7 +130,7 @@ class ReplayTests(unittest.TestCase):
         after = self.replay()
         self.assertNotEqual(before["identity_sha256"], after["identity_sha256"])
         self.assertNotEqual(before["results_sha256"], after["results_sha256"])
-        self.assertEqual(after["metrics"]["fp"], 0)
+        self.assertEqual(after["stages"][1]["metrics"]["fp"], 0)
 
     def test_failed_manifest_replace_leaves_detectable_stale_pair(self):
         before = self.replay()
@@ -363,17 +414,15 @@ class ChunkReplayTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "chunk_chars"):
                 self.replay()
 
-    def test_unreached_chunk_stage_needs_no_scores(self):
+    def test_all_stages_need_scores_even_after_detection(self):
         self.config["stages"][0]["threshold"] = 0
         stage = self.config["stages"][1]
         path = self.root / stage["cache"]
         path.write_text("")
         stage.update(chunk_chars=8, overlap_chars=2, cache_sha256=digest(path))
         self.save_config()
-        stage_result = self.replay()["stages"][1]
-        self.assertEqual(stage_result["reached"], 0)
-        self.assertEqual(stage_result["location"]["overall"], rate(0, 0))
-        self.assertEqual(stage_result["spans_longer_than_overlap"], 0)
+        with self.assertRaisesRegex(ValueError, "missing required cached score"):
+            self.replay()
 
     def test_location_intersection_and_ties(self):
         row = {"id": "x", "label": 1, "turn_lengths": [12], "spans": [[0, 8, 9]]}

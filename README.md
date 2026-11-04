@@ -50,7 +50,10 @@ running local endpoint ([setup and replay](docs/pipeline.md#cpu-model-score-cach
 
 Every run is **deterministic and replayable**. Model outputs are cached once. Scoring runs replay
 those caches against a pinned dataset and write a manifest with counts, rates, confidence intervals,
-per-stage latency, and chunk location rates. See [docs/runs.md](docs/runs.md).
+per-stage latency, and chunk location rates. Replay evaluates every stage on every row and
+reports independent stage metrics alongside max-fused detection and false positives; optional
+weights and a fusion threshold live in the run JSON config. Complete stage caches are required
+([fusion settings](docs/pipeline.md#replay-stage-fusion)). See [docs/runs.md](docs/runs.md).
 
 ### The red-team loop
 

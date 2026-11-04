@@ -1,4 +1,4 @@
-"""Replay a threshold cascade from local cached scores, without inference."""
+"""Replay stage scores and max fusion from local cached scores, without inference."""
 
 import argparse
 import hashlib
@@ -116,8 +116,17 @@ def prepare(config_path):
     config = load_json(config_path)
     required = {"run_id", "timestamp", "iteration", "pipeline_version", "dataset",
                 "dataset_manifest", "evaluation_split", "stages"}
-    if not isinstance(config, dict) or set(config) != required:
+    if (not isinstance(config, dict) or not required <= set(config)
+            or set(config) - required - {"fusion"}):
         raise ValueError("run config must contain exactly the documented fields")
+    fusion = config.get("fusion", {})
+    if (not isinstance(fusion, dict) or set(fusion) - {"threshold", "weights"}
+            or not isinstance(fusion.get("weights", {}), dict)):
+        raise ValueError("fusion must contain only threshold and a stage-name weights object")
+    number(fusion.get("threshold", 0.5), "fusion threshold", 1)
+    weights = fusion.get("weights", {})
+    for weight in weights.values():
+        number(weight, "fusion weight", 1)
     for field in required - {"iteration", "stages"}:
         if not isinstance(config[field], str) or not config[field].strip():
             raise ValueError(f"{field} must be a nonempty string")
@@ -203,8 +212,10 @@ def prepare(config_path):
             number(entry["latency_ms"], "latency_ms")
             cache[key] = entry
         stages.append((stage, cache))
+    if weights.keys() - names:
+        raise ValueError("fusion weights contain unknown stage names")
     identity = {
-        "runner_version": 2, "config": config,
+        "runner_version": 3, "config": config,
         "dataset_sha256": dataset_manifest["output_sha256"],
         "dataset_manifest_sha256": digest(dataset_manifest_path),
     }
@@ -213,8 +224,9 @@ def prepare(config_path):
     return config, dataset_manifest, rows, stages, identity_hash, inputs
 
 
-def evaluate(row, stages):
-    scores, detected = [], False
+def evaluate(row, stages, fusion=None):
+    fusion = fusion or {}
+    scores = []
     for stage, cache in stages:
         if "chunk_chars" in stage:
             chunks = [(turn, start, end)
@@ -226,12 +238,14 @@ def evaluate(row, stages):
         if any(key not in cache for key in keys):
             raise ValueError("missing required cached score; run inference separately")
         entries = [cache[key] for key in keys]
-        best = max(range(len(entries)), key=lambda index: entries[index]["score"])
-        score = entries[best]["score"]
+        best = max(range(len(entries)), key=lambda index: entries[index]["score"], default=None)
+        score = entries[best]["score"] if best is not None else 0
         detected = score >= stage["threshold"]
         result = {"stage": stage["name"], "score": score,
                   "latency_ms": sum(entry["latency_ms"] for entry in entries), "detected": detected}
         if "chunk_chars" in stage:
+            result.update(best_chunk=None, located=None, spans_longer_than_overlap=0)
+        if "chunk_chars" in stage and best is not None:
             turn, start, end = chunks[best]
             result["best_chunk"] = [turn, start, end]
             result["located"] = (any(t == turn and start < b and a < end
@@ -240,10 +254,11 @@ def evaluate(row, stages):
             result["spans_longer_than_overlap"] = sum(
                 b - a > stage["overlap_chars"] for _, a, b in (row["spans"] or []))
         scores.append(result)
-        if detected:
-            break
+    fused_score = max(entry["score"] * fusion.get("weights", {}).get(entry["stage"], 1)
+                      for entry in scores)
     metadata = {key: value for key, value in row.items() if key not in {"spans", "turn_lengths"}}
-    return metadata | {"detected": detected, "stages": scores}
+    return metadata | {"detected": fused_score >= fusion.get("threshold", 0.5),
+                       "fused_score": fused_score, "stages": scores}
 
 
 def replay(config_path, run_directory):
@@ -252,7 +267,7 @@ def replay(config_path, run_directory):
     outputs = [root / name for name in ("results.jsonl", "manifest.json")]
     if inputs & {path.resolve() for path in outputs}:
         raise ValueError("run outputs must not overwrite input files")
-    results = [evaluate(row, stages) for row in rows]
+    results = [evaluate(row, stages, config.get("fusion")) for row in rows]
     results_bytes = "".join(canonical_json(row) + "\n" for row in results).encode("utf-8")
     results_path, manifest_path = outputs
     stage_results = []
@@ -271,6 +286,10 @@ def replay(config_path, run_directory):
                             entry["spans_longer_than_overlap"] for entry in reached)}
         stage_results.append(location | {"name": stage["name"], "version": stage["version"],
                               "threshold": stage["threshold"], "reached": len(reached),
+                              "metrics": metrics([
+                                  {"label": row["label"], "detected": entry["detected"]}
+                                  for row in results for entry in row["stages"]
+                                  if entry["stage"] == stage["name"]]),
                               "caught": sum(entry["detected"] for entry in reached),
                               "passed": sum(not entry["detected"] for entry in reached),
                               "score_summary": {
@@ -289,6 +308,10 @@ def replay(config_path, run_directory):
         "evaluation_split": config["evaluation_split"],
         "evaluator_approved": dataset_manifest.get("evaluator_approved") is True,
         "records": len(results), "metrics": metrics(results),
+        "fusion": {"method": "max", "threshold": config.get("fusion", {}).get("threshold", 0.5),
+                   "weights": {stage["name"]: config.get("fusion", {}).get("weights", {}).get(
+                       stage["name"], 1) for stage, _ in stages},
+                   "metrics": metrics(results)},
         "attack_distribution": dict(Counter(row["attack_family"] for row in rows if row["label"] == 1)),
         "stages": stage_results, "results_file": "results.jsonl",
         "results_sha256": hashlib.sha256(results_bytes).hexdigest(),
