@@ -119,3 +119,108 @@ def test_invalid_cap(setup, cap):
     setup[0].write_text(json.dumps(config))
     with pytest.raises(ValueError, match='positive integer'):
         run(setup)
+
+
+def enable_red_team(setup, **overrides):
+    path = setup[0]
+    binary, inventory = path.parent / 'binary', path.parent / 'inventory'
+    binary.write_bytes(b'fake binary')
+    inventory.write_text('{}')
+    config = json.loads(path.read_text())
+    config['red_team'] = {'enabled': True, 'groups': 1, 'max_tokens': 128,
+                          'carrier_chars': 0, 'replay_only': False,
+                          'binary': 'binary', 'inventory': 'inventory'} | overrides
+    config['split']['heldout_families'].append('generator-v1-code_comment-delimiter_spoof')
+    path.write_text(json.dumps(config))
+
+
+def test_red_team_off_never_generates(setup, monkeypatch):
+    monkeypatch.setattr(iterate.generate, 'generate', lambda *a, **k: pytest.fail('generated'))
+    assert run(setup)['red_team'] == {
+        'status': 'off', 'generated': 0, 'approved': 0, 'approval_rate': None}
+
+
+def test_red_team_approval_split_resume_and_replay(setup, monkeypatch, capsys):
+    from test_evaluate import FakeClient as Evaluator
+    from test_generate import FakeClient as Generator
+
+    enable_red_team(setup)
+    generator = Generator()
+    monkeypatch.setattr(iterate, 'Client', lambda path, **k:
+                        generator if path.name == 'generator.sqlite' else FakeClient())
+    real_evaluate = iterate.evaluate.evaluate
+    evaluations = []
+
+    def evaluate(source, manifest, output, **kwargs):
+        # Only synthetic fixtures are read; labels agree except for one benign prediction.
+        labels = [{key: row[key] for key in ('label', 'channel', 'techniques')}
+                  for _, row in iterate.read_rows(source)]
+        labels[0] = {'label': 0, 'channel': 'direct', 'techniques': []}
+        client = Evaluator(labels)
+        evaluations.append(client)
+        return real_evaluate(source, manifest, output, client=client)
+
+    monkeypatch.setattr(iterate.evaluate, 'evaluate', evaluate)
+    # Interrupt scoring after the approved rows and family splits are checkpointed.
+    FakeClient.content = 'invalid synthetic classifier output'
+    with pytest.raises(ValueError):
+        run(setup)
+    FakeClient.content = '0'
+    result = run(setup)
+    summary = result['red_team']
+    assert summary['generated'] == 4 and summary['approved'] == 3
+    assert summary['approval_rate'] == 3 / 4
+    assert generator.calls == 1 and max(generator.batches) == 1
+    assert len(evaluations) == 1
+    work = next(setup[1].glob('runs/.iterations/*/state.json')).parent
+    generated = json.loads((work / 'generated/split_manifest.json').read_text())
+    assert sum(s['records'] for s in generated['splits'].values()) == 3
+    assert generated['splits']['heldout']['records'] == 2
+    rows = [r for _, r in iterate.read_rows(work / 'dataset.jsonl')]
+    approved = [r for r in rows if r['label_source'] == 'evaluator']
+    assert len(approved) == 3
+    assert all(r['publishable'] == 'no' for r in approved)
+    before = {p: p.read_bytes() for root in setup[1:] for p in root.rglob('*') if p.is_file()}
+    assert run(setup) == result
+    assert all(p.read_bytes() == value for p, value in before.items())
+    assert generator.calls == 1 and len(evaluations) == 1
+    report = next(setup[2].glob('*.md')).read_text()
+    assert 'generated 4, approved 3; approval rate 0.75' in report
+    assert capsys.readouterr().out == ''
+
+
+@pytest.mark.parametrize('replay_only', [False, True])
+def test_red_team_unavailable_skips_cleanly(setup, monkeypatch, capsys, replay_only):
+    from test_generate import FakeClient as Generator
+
+    enable_red_team(setup, replay_only=replay_only)
+    client = Generator()
+    def down():
+        for job in client.jobs.values():
+            job['error'] = 'transport_error'
+        raise ProxyError('synthetic transport error')
+    client.drain = down
+    monkeypatch.setattr(iterate, 'Client', lambda path, **k:
+                        client if path.name == 'generator.sqlite' else FakeClient())
+    monkeypatch.setattr(iterate.evaluate, 'evaluate', lambda *a, **k: pytest.fail('evaluated'))
+    result = run(setup)
+    expected = 'replay-only cache miss' if replay_only else 'Maya unreachable'
+    assert result['red_team']['status'] == expected
+    assert result['red_team']['approved'] == 0
+    assert len(result['runs']) == 2
+    assert 'red-team round skipped: ' + expected in capsys.readouterr().out
+
+
+def test_red_team_refusal_stops_iteration(setup, monkeypatch):
+    from test_generate import FakeClient as Generator
+
+    enable_red_team(setup)
+    client = Generator()
+    def refuse():
+        raise ProxyError('refusal')
+    client.drain = refuse
+    monkeypatch.setattr(iterate, 'Client', lambda *a, **k: client)
+    with pytest.raises(ProxyError, match='refusal'):
+        run(setup)
+    assert not list(setup[1].rglob('complete.json'))
+    assert client.batches == [1]

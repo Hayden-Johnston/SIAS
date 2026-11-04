@@ -150,3 +150,19 @@ def test_refusal_stops_before_next_batch(tmp_path):
         generate(tmp_path, model='fixture', timestamp=STAMP, client=client, groups=3)
     assert client.batches == [1]
     assert not list(tmp_path.rglob('manifest.json'))
+
+
+def test_replay_only_cache_miss_and_cached_bytes(tmp_path):
+    client = FakeClient()
+    options = {'model': 'fixture', 'timestamp': STAMP, 'client': client, 'groups': 2}
+    from data_processing.generate import GenerationUnavailable
+
+    with pytest.raises(GenerationUnavailable, match='replay-only'):
+        generate(tmp_path, **options, replay_only=True)
+    assert client.calls == 0
+    result = generate(tmp_path, **options)
+    before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    client.drain = lambda: pytest.fail('replay drained queue')
+    assert generate(tmp_path, **options, replay_only=True) == result
+    assert all(p.read_bytes() == value for p, value in before.items())
+    assert client.calls == 2

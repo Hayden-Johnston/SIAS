@@ -154,6 +154,21 @@ source-label metrics, with `evaluator_approved: false`; the sample cap is per sp
 are fabricated for rows outside the sample. The generated report and run IDs identify each split.
 Full split counts and the cap are recorded in `runs/.iterations/*/complete.json`.
 
+An optional `red_team` section (see `iterate.example.json`) enables a capped generation and
+CPU evaluator round before splitting. It defaults off. Set `enabled: true`, `groups` (each request
+produces three variants and one hard negative), `max_tokens`, `carrier_chars`, `replay_only`,
+and local evaluator `binary`/`inventory` paths, resolved relative to the config. Generation uses
+the pinned `model`, safe seeds, cached Maya calls and batch/concurrency 1. Only evaluator-approved
+rows (`label_source: evaluator`) join the normalized dataset; a separate `generated/` directory
+keeps their train/dev/test/heldout splits under the iteration checkpoint, using the same family
+assignment. Mixed source/generated run metrics remain `evaluator_approved: false`.
+
+Maya transport failures or replay-only generation cache misses log a skip and continue with source
+data. Skips are checkpointed for that iteration; changing config creates a new iteration. Refusals
+and permanent failures stop the iteration. The round starts a CPU-only evaluator child when needed,
+never manages Maya, and reports generated/approved counts and approval rate without payload text.
+`replay_only` applies to generation; uncached evaluation and classifier stages still need inference.
+
 Identical inputs/configuration/code reuse the iteration number and caches, including measured
 latencies. Interrupted iterations resume checkpoints; completed model responses replay without
 inference. Classification requires an exact `0` or `1`; missing/invalid scores fail the run.

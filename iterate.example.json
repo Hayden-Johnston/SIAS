@@ -16,5 +16,14 @@
   "max_tokens": 128,
   "pipeline_version": "end-to-end-v0",
   "rule_threshold": 0.75,
-  "model_threshold": 0.5
+  "model_threshold": 0.5,
+  "red_team": {
+    "enabled": false,
+    "groups": 2,
+    "max_tokens": 2048,
+    "carrier_chars": 8192,
+    "replay_only": false,
+    "binary": "llama-server",
+    "inventory": "data/inventory.json"
+  }
 }

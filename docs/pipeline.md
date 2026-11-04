@@ -29,3 +29,18 @@ with no misses.
 Weight-space programming and fine-tuning, using Phase 1 activation data, to potentially consolidate
 the rule set. Order: probes, activation steering, weight edits. Judge every edit by the same held-out
 metrics. Treat downloaded checkpoints as untrusted.
+
+## Optional iteration red team
+
+`ops/iterate.py` accepts the optional `red_team` settings in `iterate.example.json` (default off).
+Before source splitting, it generates capped taxonomy triples and hard negatives via the cached
+Maya client at concurrency 1, then calls the existing CPU llama.cpp evaluator. Only agreeing rows
+with `label_source: evaluator` are appended to the normalized data. Generated rows also have a
+separate `generated/` split directory; both datasets use `split.py` family/group assignments, so
+variants stay together and held-out families remain held out. Source labels remain unapproved.
+
+The dated iteration report and completion manifest include generated/approved counts and approval
+rate. These measure evaluator agreement, not detection improvement. Generation cache misses in
+`replay_only` mode and Maya transport failures are checkpointed skips; refusals fail the iteration.
+Completed rounds resume without regeneration or reevaluation. Generation replay-only mode does not
+disable inference in other stages. No Maya lifecycle operations are performed.

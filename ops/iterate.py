@@ -6,7 +6,7 @@ import fcntl
 import hashlib
 from pathlib import Path
 
-from data_processing import rules, sources, split
+from data_processing import evaluate, generate, rules, sources, split
 from data_processing.normalize import canonical_json, normalize
 from data_processing.run import (
     atomic_write,
@@ -57,13 +57,63 @@ def model_cache(dataset, output, client, config):
     atomic_write(output, ''.join(canonical_json(row) + '\n' for row in entries).encode())
 
 
+def red_team_round(work, config, timestamp):
+    checkpoint = work / 'red-team.json'
+    if checkpoint.exists():
+        return load_json(checkpoint)
+    summary = {'status': 'off', 'generated': 0, 'approved': 0, 'approval_rate': None}
+    options = config.get('red_team', {'enabled': False})
+    if options['enabled']:
+        client = Client(work / 'generator.sqlite', env_file=REPO / '.env')
+        try:
+            candidates = generate.generate(
+                work / 'candidates', model=config['model'], timestamp=timestamp, client=client,
+                groups=options['groups'], batch_size=1, max_tokens=options['max_tokens'],
+                carrier_chars=options['carrier_chars'], replay_only=options['replay_only'])
+        except generate.GenerationUnavailable as error:
+            summary['status'] = str(error)
+            print('red-team round skipped: ' + str(error))
+        else:
+            source = work / 'candidates' / candidates['generator']['run_id']
+            approved = evaluate.evaluate(
+                source / 'candidates.jsonl', source / 'manifest.json', work / 'evaluated',
+                binary=options['binary'], inventory=options['inventory'])
+            output = work / 'evaluated' / approved['evaluator']['run_id']
+            # Keep the generated subset separately auditable, using the same family assignment.
+            split.split(output / 'approved.jsonl', output / 'manifest.json',
+                        config['split'], work / 'generated')
+            summary.update(status='complete', generated=candidates['records'],
+                           approved=approved['records'],
+                           approval_rate=approved['evaluator']['approval_rate'],
+                           generator_run_id=candidates['generator']['run_id'],
+                           evaluator_run_id=approved['evaluator']['run_id'])
+    write_json(checkpoint, summary)
+    return summary
+
+
 def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
     config_path, data, reports = map(Path, (config_path, data, reports))
     config = load_json(config_path)
     required = {'sources', 'split', 'sample_cap', 'model', 'max_tokens',
                 'pipeline_version', 'rule_threshold', 'model_threshold'}
-    if not isinstance(config, dict) or set(config) != required:
+    if (not isinstance(config, dict) or not required <= set(config)
+            or set(config) - required - {'red_team'}):
         raise ValueError('iteration config must contain exactly the documented fields')
+    options = config.get('red_team', {'enabled': False})
+    if not isinstance(options, dict) or type(options.get('enabled')) is not bool:
+        raise ValueError('red_team requires a boolean enabled field')
+    fields = {'enabled', 'groups', 'max_tokens', 'carrier_chars', 'replay_only', 'binary', 'inventory'}
+    if set(options) - fields or (options['enabled'] and set(options) != fields):
+        raise ValueError('red_team must contain the documented fields')
+    if options['enabled']:
+        for name in ('groups', 'max_tokens', 'carrier_chars'):
+            if type(options[name]) is not int or options[name] < (0 if name == 'carrier_chars' else 1):
+                raise ValueError('invalid red_team count')
+        if type(options['replay_only']) is not bool:
+            raise ValueError('red_team replay_only must be boolean')
+        for name in ('binary', 'inventory'):
+            if not isinstance(options[name], str) or not options[name].strip():
+                raise ValueError('red_team paths must be nonempty strings')
     for key in ('sample_cap', 'max_tokens'):
         if type(config[key]) is not int or config[key] < 1:
             raise ValueError(f'{key} must be a positive integer')
@@ -90,6 +140,14 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                                             REPO / 'src/data_processing/run.py')],
                 'mappings': [digest(p) for p in sorted(
                     (Path(sources.__file__).parent / 'source_mappings').glob('*.json'))]}
+    if options['enabled']:
+        identity['red_team'] = [digest(generate.__file__), digest(evaluate.__file__)]
+        # Resolve paths after hashing the original config so its identity stays stable.
+        options = options.copy()
+        for name in ('binary', 'inventory'):
+            options[name] = config_path.resolve().parent / options[name]
+            identity['red_team'].append(digest(options[name]))
+        config = config | {'red_team': options}
     key = hashlib.sha256(canonical_json(identity).encode()).hexdigest()
     runs = data / 'runs'
     runs.mkdir(parents=True, exist_ok=True)
@@ -107,6 +165,7 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
             write_json(state_path, {'iteration': max(previous, default=0) + 1,
                                     'timestamp': dt.datetime.now(dt.UTC).isoformat()})
         state = load_json(state_path)
+        red_team = red_team_round(work, config, state['timestamp'])
         # Checkpoints are immutable per input/config/code identity. Resume never rescores
         # completed rule caches (whose measured latency would otherwise change bytes).
         split_path = work / 'splits' / 'split_manifest.json'
@@ -117,6 +176,8 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                 sources.load_source(source['source'], paths, out, work / f'source-{index}.json',
                                     revision=source['revision'], timestamp=source['timestamp'])
                 normalized.append(out)
+            if red_team['status'] == 'complete':
+                normalized.append(work / 'evaluated' / red_team['evaluator_run_id'] / 'approved.jsonl')
             combined = work / 'combined.jsonl'
             with combined.open('wb') as writer:
                 for path in normalized:
@@ -165,8 +226,10 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
         reports.mkdir(parents=True, exist_ok=True)
         report = reports / f"{state['timestamp'][:10]}-iteration-{state['iteration']:06d}.md"
         lines = [f"# Iteration {state['iteration']}: {config['pipeline_version']}", '',
-                 ('Capped deterministic samples; source labels, not evaluator approval. '
+                 ('Capped deterministic samples; source labels plus optional evaluator-approved rows. '
                  'Rates apply only to these samples. Full counts and Wilson intervals are in run manifests.'), '']
+        lines.append(f"Red-team round: {red_team['status']}; generated {red_team['generated']}, "
+                     f"approved {red_team['approved']}; approval rate {red_team['approval_rate']}.")
         for result in manifests:
             m = result['metrics']
             lines.append(f"- {result['evaluation_split']}: {result['records']} rows; "
@@ -175,7 +238,7 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
         atomic_write(report, ('\n'.join(lines) + '\n').encode())
         result = state | {'identity_sha256': key, 'pipeline_version': config['pipeline_version'],
                           'runs': [m['run_id'] for m in manifests], 'sample_cap': config['sample_cap'],
-                          'split_counts': load_json(split_path)['splits']}
+                          'split_counts': load_json(split_path)['splits'], 'red_team': red_team}
         write_json(work / 'complete.json', result)
         return result
 
