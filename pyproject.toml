@@ -16,6 +16,13 @@ dependencies = [
     "pydantic-settings>=2.15.0",
 ]
 
+[project.optional-dependencies]
+activations = [
+    "safetensors>=0.4.0",
+    "torch>=2.2.0",
+    "transformers>=4.40.0",
+]
+
 [project.scripts]
 sias = "llm_security.main:main"
 
@@ -24,11 +31,25 @@ requires = ["uv_build>=0.13.0,<0.14.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
+activations = [
+    "safetensors>=0.4.0",
+    "torch>=2.2.0",
+    "transformers>=4.40.0",
+]
 dev = [
+    { include-group = "activations" },
     "pytest>=9.1.1",
     "ruff>=0.17.0",
     "ty>=0.0.86",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
 
 [tool.uv.build-backend]
 module-name = ["llm_security", "data_processing", "llm_proxy"]
