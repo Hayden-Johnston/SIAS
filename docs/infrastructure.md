@@ -23,7 +23,7 @@
 
 ### Activation capture CLI
 
-Install the optional `activations` dependency group (configured to use the CPU PyTorch wheel) and run `data_processing.activations`:
+Install the optional `activations` extra (configured to use the CPU PyTorch wheel) and run `data_processing.activations`:
 
 ```sh
 uv sync --extra activations

@@ -1891,19 +1891,9 @@ activations = [
 ]
 
 [package.dev-dependencies]
-activations = [
-    { name = "safetensors" },
-    { name = "torch", version = "2.15.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
-    { name = "transformers" },
-]
 dev = [
     { name = "pytest" },
     { name = "ruff" },
-    { name = "safetensors" },
-    { name = "torch", version = "2.15.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
-    { name = "transformers" },
     { name = "ty" },
 ]
 
@@ -1922,17 +1912,9 @@ requires-dist = [
 provides-extras = ["activations"]
 
 [package.metadata.requires-dev]
-activations = [
-    { name = "safetensors", specifier = ">=0.4.0" },
-    { name = "torch", specifier = ">=2.2.0", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "transformers", specifier = ">=4.40.0" },
-]
 dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.17.0" },
-    { name = "safetensors", specifier = ">=0.4.0" },
-    { name = "torch", specifier = ">=2.2.0", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "transformers", specifier = ">=4.40.0" },
     { name = "ty", specifier = ">=0.0.86" },
 ]
 

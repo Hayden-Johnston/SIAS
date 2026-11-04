@@ -79,7 +79,7 @@ uv run ruff check                     # lint
 # Normalize a local JSONL source into the shared schema (no network, no inference)
 uv run python -m data_processing.normalize source.jsonl out.jsonl --manifest out.manifest.json
 
-# Capture hidden-state activations (CPU by default, resumable safetensors shards)
+# Capture hidden-state activations (needs `uv sync --extra activations`; CPU, resumable)
 uv run python -m data_processing.activations out.jsonl activations/dev --dataset-manifest out.manifest.json
 
 # Replay a scored run from cached stage outputs
