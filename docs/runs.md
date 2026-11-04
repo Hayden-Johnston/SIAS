@@ -99,7 +99,8 @@ an existing cache. Inputs must remain unchanged during production; use one write
 It prints only an aggregate summary with the cache/dataset hashes, producer `version`, score
 min/max/mean, and total/mean latency. Copy `version` and `cache_sha256` into a replay stage
 and set `cache` to its path. The version hashes the producer file containing all rules and
-fixed settings. No model or network client is used.
+fixed settings. Window sizes are pinned separately in the replay stage configuration.
+No model or network client is used.
 
 Rules and the scoring function live in `src/data_processing/rules.py`. The stage performs
 NFKC, case folding, removal of Unicode format characters (including zero-width characters),
@@ -107,22 +108,46 @@ and a small explicit Greek/Cyrillic homoglyph mapping on a temporary copy. The d
 normalizer preserves text; these detection transformations do not change dataset bytes.
 An imperative override verb within four intervening tokens of an instruction target scores
 1.0; role/chat delimiter markers score 0.75; encoding indicators score 0.25; no match scores
-0.0. The highest matching score wins. These are ordinal heuristic strengths, not calibrated
+0.0. The highest matching rule or token feature score wins. These are ordinal heuristic strengths, not calibrated
 probabilities. The example threshold 0.5 catches override/role markers, not encoding alone.
 Encoding rules detect base64 mentions or long base64-like strings, percent/hex/Unicode escape
 runs, and hex literals; they do not decode content. Minimum run lengths are documented next
 to the expressions to avoid flagging individual escapes and short identifiers.
+
+Named CPU-only token features supplement the regex rules. They operate on the same normalized
+copy, split at sentence punctuation (`.!?;`) and newlines, and use word tokens:
+
+| Feature | Score | Trigger |
+|---|---|---|
+| `role_override` | 0.9 | Clause starts with an override verb or `set aside`, optionally after `please`/`now`, with `system`, `developer`, or `assistant` within six following tokens. |
+| `assistant_refusal_suppression` | 0.75 | `assistant` within eight preceding tokens of `you must/shall not/never`, then `refuse` within the next three tokens. |
+| `instruction_density` | 0.25 | At least three clauses start with a directive verb, optionally after `please`/`now`, and at least half of nonempty clauses do so. |
+
+The verb lists and weights live beside the implementation. Distances allow short modifiers;
+clause boundaries restrict unrelated matches. Density stays weak because ordinary task lists
+also contain many directives. Scores never add up, even on repetition. These are English lexical
+heuristics, without parsing or contextual intent understanding.
 
 Multi-turn rows score each content string independently and take the maximum, without treating
 JSON role metadata as spoofing. Latency uses a monotonic clock and covers content extraction,
 transformations and matching per row; it excludes dataset validation and disk I/O. Re-running
 preserves scores and order, while new latency measurements change cache bytes and hashes.
 Reuse the existing pinned cache for byte-identical replay. Cache production retains scores
-and IDs in memory, proportional to dataset size.
+and IDs in memory, proportional to cache entries and dataset row count.
 
-This baseline can flag benign quotations and technical documents and miss paraphrases,
+For chunk/location output, pass both `--chunk-chars 4096 --overlap-chars 512` (example sizes)
+and add the same settings to the replay stage. These are optional, with no implicit defaults;
+omitting both preserves the row-cache schema and callers. Chunk output uses the existing
+`id`, `turn`, `start`, `score`, `latency_ms` contract and the runner's end-aligned windows.
+Each chunk is sliced in original Unicode coordinates before scoring transformations. The CLI
+summary's `records` counts dataset rows; `entries` counts cache entries. Score and latency
+summaries describe entries. Chunk latency measures slicing and scoring, excluding turn extraction.
+There are no entries for an empty multi-turn conversation. The producer hash changes when
+features change; cache field names and runner version remain compatible.
+
+This stage can flag benign quotations and technical documents and miss paraphrases,
 other languages, encoded instructions, and instructions spread across turns. It has no
-contextual intent classifier, chunk/location output, evaluator approval, or tuned threshold.
+contextual intent classifier, evaluator approval, or tuned threshold.
 Measure it on approved development data before treating it as a detection control.
 
 ## Run files
