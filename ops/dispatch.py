@@ -45,6 +45,7 @@ MAX_RUNS_PER_WINDOW = {"claude": 12, "codex": 15, "pi": 30}
 MIN_GAP = {"claude": dt.timedelta(minutes=5), "codex": dt.timedelta(minutes=5), "pi": dt.timedelta(0)}
 FAIL_COOLDOWN = dt.timedelta(hours=2)  # after a failed run (often a usage limit), wait before retrying
 PLAN_INTERVAL = dt.timedelta(hours=3)  # at most one planning run per 3 hours
+PUSH_TRIES = 5  # GitHub SSH rejected ~half of connections on 2026-11-04
 MIN_QUEUE = 2  # plan more work when a worker has fewer ready tickets than this
 ENV = {**os.environ, "PATH": f"{Path.home()}/.local/bin:/usr/local/bin:/usr/bin:/bin"}
 
@@ -196,8 +197,10 @@ def reap(agent):
             log(tid, "dispatch", f"{state['mode']} run ended (exit {code}) without a status change; "
                                  f"see board/logs/{state['name']}.log")
     if agent in WORKERS:  # publish the worker's branch; sandboxes have no SSH key
-        subprocess.run(["git", "-C", str(WT / agent), "push", "-q", "--force-with-lease", "github", agent],
-                       env=ENV, check=False)  # a failed push retries after the next run
+        push = ["git", "-C", str(WT / agent), "push", "-q", "--force-with-lease", "github", agent]
+        for _ in range(PUSH_TRIES):  # GitHub SSH intermittently rejects the key; later runs retry too
+            if subprocess.run(push, env=ENV, check=False, capture_output=True).returncode == 0:
+                break
     return False
 
 
