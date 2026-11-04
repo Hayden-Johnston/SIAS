@@ -40,8 +40,9 @@ RUN_TIMEOUT = "3h"  # longer runs are assumed stuck
 # Interactive Claude sessions share Claude's window, so Claude gets fewer dispatched runs.
 WINDOW = dt.timedelta(hours=5)
 # pi runs on a local model and costs no plan tokens; its cap only guards against runaway loops.
-MAX_RUNS_PER_WINDOW = {"claude": 5, "codex": 5, "pi": 20}
-MIN_GAP = {"claude": dt.timedelta(minutes=30), "codex": dt.timedelta(minutes=30), "pi": dt.timedelta(0)}
+# Caps are loose: usage checked 2026-11-04 showed large headroom; the window cap still stops runaway loops.
+MAX_RUNS_PER_WINDOW = {"claude": 12, "codex": 15, "pi": 30}
+MIN_GAP = {"claude": dt.timedelta(minutes=5), "codex": dt.timedelta(minutes=5), "pi": dt.timedelta(0)}
 FAIL_COOLDOWN = dt.timedelta(hours=2)  # after a failed run (often a usage limit), wait before retrying
 PLAN_INTERVAL = dt.timedelta(hours=3)  # at most one planning run per 3 hours
 MIN_QUEUE = 2  # plan more work when a worker has fewer ready tickets than this
