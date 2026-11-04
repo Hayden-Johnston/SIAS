@@ -1,6 +1,8 @@
 """Score a normalized dataset with local rules and write a replay score cache."""
 
 import argparse
+import base64
+import codecs
 import json
 import re
 import unicodedata
@@ -12,6 +14,45 @@ from data_processing.run import atomic_write, digest, load_json, read_rows, wind
 
 # Limited visual substitutions, not a complete confusables implementation.
 HOMOGLYPHS = str.maketrans(dict(zip("аеорсухіјкмтαοερικ", "aeopcyxijkmtaoepik", strict=True)))
+
+# At least four hex bytes or two base64 quartets; ROT13 needs an explicit
+# marker because ordinary words are also valid ROT13. Match once, not recursively.
+ENCODED = re.compile(
+    r"\b(?i:rot13):[ \t]*(?P<rot13>[^\n]+)"
+    r"|(?<!\w)(?:0[xX])?(?P<hex>(?:[0-9a-fA-F]{2}){4,})(?!\w)"
+    r"|(?<![\w+/])(?P<base64>[A-Za-z0-9+/]{8,}={0,2})(?![\w+/=])"
+)
+
+
+def _normalize_unicode(text):
+    text = unicodedata.normalize("NFKC", text)
+    return "".join(char for char in text if unicodedata.category(char) != "Cf")
+
+
+def canonicalize(text):
+    """Fold Unicode and decode printable UTF-8 spans once; never execute text.
+
+    Hex is contiguous, optionally prefixed by 0x; base64 is standard, padded
+    or unpadded. A rot13: marker covers the remainder of its line. This view
+    is only for scoring: offsets must always come from the original text.
+    """
+    def decode(match):
+        try:
+            if match.lastgroup == "rot13":
+                decoded = codecs.decode(match["rot13"], "rot_13")
+            elif match.lastgroup == "hex":
+                decoded = bytes.fromhex(match["hex"]).decode("utf-8")
+            else:
+                value = match["base64"]
+                decoded = base64.b64decode(value + "=" * (-len(value) % 4),
+                                           validate=True).decode("utf-8")
+        except ValueError:
+            return match[0]
+        return (decoded if decoded and all(c.isprintable() or c in "\n\r\t" for c in decoded)
+                else match[0])
+
+    text = ENCODED.sub(decode, _normalize_unicode(text))
+    return _normalize_unicode(text).casefold().translate(HOMOGLYPHS)
 
 # Scores are ordinal heuristic strengths, not calibrated probabilities. The maximum
 # matching rule wins: repetition cannot inflate a weak encoding signal into a catch.
@@ -29,7 +70,7 @@ RULES = (
     )),
     # Encoding is suspicious but also common in benign technical material.
     # Require 32 base64 characters (eight blocks), eight escapes/percent bytes,
-    # or sixteen hex bytes. Detect only; never execute or recursively decode.
+    # or sixteen hex bytes. This weak signal also applies to undecodable data.
     (0.25, re.compile(
         r"\bbase64\b|(?<![a-z0-9+/])[a-z0-9+/]{32,}={0,2}(?![a-z0-9+/=])"
         r"|(?:%[0-9a-f]{2}){8,}|(?:\\x[0-9a-f]{2}){8,}"
@@ -40,9 +81,8 @@ RULES = (
 
 def score(text):
     """Return a deterministic [0, 1] score; preserve the stored dataset text."""
-    text = unicodedata.normalize("NFKC", text).casefold().translate(HOMOGLYPHS)
-    text = "".join(char for char in text if unicodedata.category(char) != "Cf")
-    return max((weight for weight, pattern in RULES if pattern.search(text)), default=0.0)
+    return max((weight for candidate in (text.casefold(), canonicalize(text))
+                for weight, pattern in RULES if pattern.search(candidate)), default=0.0)
 
 
 def write_cache(dataset, dataset_manifest, output, *, chunk_chars=None, overlap_chars=None):
