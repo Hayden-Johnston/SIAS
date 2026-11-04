@@ -197,6 +197,54 @@ class ReplayTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must not overwrite"):
             replay(self.root / "manifest.json", self.root)
 
+    def test_empty_dataset_produces_valid_manifest(self):
+        # An empty dataset (0 rows) is valid and produces a manifest with 0 records.
+        empty = self.root / "empty.jsonl"
+        empty.write_bytes(b"")
+        manifest = self.root / "empty.manifest.json"
+        manifest.write_text(json.dumps({
+            "schema_version": 2,
+            "output_sha256": digest(empty),
+            "records": 0,
+        }))
+        # Use a single stage with an empty cache.
+        cache = self.root / "empty_cache.jsonl"
+        cache.write_bytes(b"")
+        self.config["dataset"] = "empty.jsonl"
+        self.config["dataset_manifest"] = "empty.manifest.json"
+        self.config["stages"] = [{"name": "s", "version": "v1", "threshold": 0.5,
+                                   "cache": "empty_cache.jsonl", "cache_sha256": digest(cache)}]
+        self.save_config()
+        result = self.replay()
+        self.assertEqual(result["records"], 0)
+        self.assertEqual(result["metrics"]["detection"]["value"], None)
+        self.assertEqual(result["metrics"]["false_positive"]["value"], None)
+        self.assertEqual(result["stages"][0]["reached"], 0)
+
+    def test_duplicate_dataset_ids_are_rejected(self):
+        # Two rows with the same id in the dataset are rejected by prepare().
+        # Write directly (bypassing normalize) to test run.py's own check.
+        source = self.root / "source.jsonl"
+        rows = [json.loads(line) for line in source.read_text().splitlines()]
+        rows[1]["id"] = rows[0]["id"]  # Make duplicate
+        data = "".join(json.dumps(r) + "\n" for r in rows)
+        dataset = self.root / "dataset.jsonl"
+        dataset.write_text(data)
+        manifest = self.root / "dataset.manifest.json"
+        manifest.write_text(json.dumps({
+            "schema_version": 2,
+            "output_sha256": digest(dataset),
+            "records": len(rows),
+        }))
+        with self.assertRaisesRegex(ValueError, "duplicate dataset id"):
+            self.replay()
+
+    def test_unknown_evaluation_split_is_rejected(self):
+        self.config["evaluation_split"] = "unknown_split"
+        self.save_config()
+        with self.assertRaisesRegex(ValueError, "evaluation_split must be train, validation, or held_out"):
+            self.replay()
+
     def test_cli_returns_only_aggregate_manifest(self):
         result = subprocess.run(
             [sys.executable, "-m", "data_processing.run", str(self.config_path),

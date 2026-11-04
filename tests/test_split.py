@@ -246,6 +246,27 @@ class SplitTests(unittest.TestCase):
         # With 50 families and 60/20/20, all splits should be non-empty.
         self.assertTrue(all(v > 0 for v in non_heldout.values()))
 
+    def test_row_missing_required_field_raises_keyerror(self):
+        # split() accesses fields directly without schema validation.
+        for field in ("group_id", "attack_family", "label", "channel", "techniques"):
+            row = record()
+            del row[field]
+            rows = [row]
+            self.write_input(rows)
+            with self.subTest(field=field), self.assertRaises(KeyError):
+                self.run_split()
+
+    def test_duplicate_ids_are_allowed(self):
+        # split() does not check for duplicate ids; both rows are processed.
+        rows = [
+            record(id="dup-1"),
+            record(id="dup-1", text="synthetic 2", group_id="bg2"),
+        ]
+        self.write_input(rows)
+        result = self.run_split()
+        total = sum(s["records"] for s in result["splits"].values())
+        self.assertEqual(total, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
