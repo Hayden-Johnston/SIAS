@@ -354,6 +354,18 @@ No public source covers long context, documents, tool output, code comments or h
 Those come from the red team and must be approved by the evaluator. Generated data is published only
 after review.
 
+Offline [taxonomy coverage](reports/2026-11-04-dataset-coverage.md) from the approved source
+manifests shows no document, tool-output, code-comment or multi-turn attack rows, and no explicit
+roleplay, encoding, delimiter-spoof, payload-split or many-shot annotations. Long-context coverage
+is unknown because dataset manifests do not record lengths. All source rows still await evaluator
+approval; `novel` includes unspecified techniques. Refresh the table without reading payloads:
+
+```sh
+python3 ops/coverage.py
+# Select other aggregate manifests and optionally save the Markdown table:
+python3 ops/coverage.py source.manifest.json --output reports/coverage.md
+```
+
 ## Roadmap
 
 1. **Infrastructure:** schema and normalization, replayable runs, dashboard, model client and
