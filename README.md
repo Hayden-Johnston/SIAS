@@ -80,6 +80,7 @@ uv run ruff check                     # lint
 uv run python -m data_processing.normalize source.jsonl out.jsonl --manifest out.manifest.json
 
 # Capture hidden-state activations (needs `uv sync --extra activations`; CPU, resumable)
+# Writes per-prompt shards, an append-only index.jsonl, and an index.json summary
 uv run python -m data_processing.activations out.jsonl activations/dev --dataset-manifest out.manifest.json
 
 # Load an approved local snapshot (source names and selection rules: docs/datasets.md)
