@@ -1,0 +1,13 @@
+{
+    "run_count": 0,
+    "mode": "test",
+    "providers": {
+        "http://localhost:8080/v1": [
+            "example-model",
+            "PROVIDER_API_KEY"
+        ]
+    },
+    "datasets": [
+        "example-owner/example-dataset"
+    ]
+}

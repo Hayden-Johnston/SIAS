@@ -21,3 +21,6 @@ board/
 
 # Contains internal hosts; local only until scrubbed
 docs/rig.md
+
+# Local prototype endpoints and model configuration
+config.local.json
