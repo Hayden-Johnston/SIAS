@@ -156,7 +156,7 @@ latencies. Interrupted iterations resume checkpoints; completed model responses 
 inference. Classification requires an exact `0` or `1`; missing/invalid scores fail the run.
 Persisted failed requests stop before further inference and need operator review. Use a checkpoint
 specific served model ID and bump `pipeline_version` when the underlying weights change. This
-baseline classifies whole stored text; chunking, red-team generation and evaluator ingestion are
+baseline classifies whole stored text; chunking and evaluator ingestion are
 separate workflows.
 
 The existing `ops/dispatch.py tick` launches a token-free `pipeline` worker at most every six hours
@@ -165,6 +165,35 @@ mechanism, respects `board/STOP`, and never starts or stops a model server. The 
 that local configuration. `--config` and `--data` override the script's config and storage root;
 the dashboard must use the corresponding `--runs` directory. Local queue/cache files contain text
 and stay outside git.
+
+### Red-team candidate generation
+
+Generate unapproved schema-v2 triples and one quoted-attack hard negative per group:
+
+```sh
+# Offline plan: no cache writes or inference
+uv run python -m data_processing.generate --model PINNED_CHECKPOINT \
+  --timestamp 2026-11-04T00:00:00Z --dry-run
+
+# Use the same arguments without --dry-run to call the already running Maya server.
+# --groups 50 --batch-size 1 --max-tokens 2048 are the small default request budget.
+```
+
+Outputs live under the storage root's `candidates/<run-id>/`: candidate JSONL and an aggregate
+manifest with channel/technique counts and checksum. The command prints aggregates only.
+`--output-dir` overrides the candidates root; keep it outside git. The dedicated cached queue
+replays completed requests on resume. Each run has its own queue to keep draining within the
+configured group budget. Use one generator process per output root.
+Persisted failed requests stop for operator review; malformed output also stops without a completion
+manifest. No model server lifecycle operations are performed.
+
+The generator cycles deterministically through the schema's channel/technique product, then through
+seeds. `--seeds` accepts a local JBB snapshot with a `Goal` column; without it, three benign-safe
+marker/style/topic goals are used. There is no automatic download or snapshot discovery.
+`--carrier-chars` defaults to 8192 benign characters on each side of indirect content, with known
+insertion spans. Multi-turn candidates use a fixed benign exchange followed by the generated user
+turn. Labels and techniques are generation requests, pending independent evaluator validation;
+all candidates have `publishable: no` and `evaluator_approved: false`.
 
 ## Repository layout
 

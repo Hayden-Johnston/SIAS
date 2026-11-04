@@ -34,3 +34,6 @@ config.local.json
 
 # Local iteration source paths and model selection
 iterate.local.json
+
+# Generated unapproved candidates and their model queue
+candidates/
