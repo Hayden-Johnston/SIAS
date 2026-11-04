@@ -19,6 +19,8 @@ keeps generating new attacks to test it.
 | **Runs on** | One local rig (AMD GPUs, ROCm). No cloud inference in the pipeline |
 | **Status** | Phase 1 infrastructure. Working toward the first end-to-end scored iteration |
 
+![SIAS architecture: orchestrator agents direct a red team of open-weight models that builds prompt-injection and jailbreak datasets, which iteratively improve the security controls](docs/images/architecture.png)
+
 ## What it detects
 
 Attacks are described along two independent axes so the results show exactly where the gaps are.
@@ -35,16 +37,8 @@ attack. Full taxonomy and schema: [docs/datasets.md](docs/datasets.md).
 
 ## How it works
 
-```mermaid
-flowchart LR
-    P[Prompt or context] --> N[Normalize<br/>unicode, homoglyphs,<br/>zero-width, encodings]
-    N --> R[Rules and NLP]
-    R --> A[Activation probe]
-    A --> S[System-one<br/>classifier models]
-    S --> V{Verdict}
-    R -. caught .-> V
-    A -. caught .-> V
-```
+**Prompt or context → normalize** (unicode, homoglyphs, zero-width, encodings) **→ rules and NLP →
+activation probe → system-one classifier models → verdict**
 
 Each stage scores a prompt from 0 to 1. A prompt is flagged at the first stage whose score crosses
 its threshold, so most traffic never reaches a model. Stage order is decided by measurement.
@@ -56,16 +50,11 @@ and per-stage latency. See [docs/runs.md](docs/runs.md).
 
 ### The red-team loop
 
-```mermaid
-flowchart LR
-    G[Generator<br/>local GLM] --> C[Candidate attacks<br/>plain, paraphrase, obfuscated]
-    C --> E[Evaluator<br/>different model family]
-    E -->|approved| D[(Dataset<br/>family splits + held-out)]
-    D --> P[Pipeline run]
-    P --> M[Metrics and dashboard]
-    M --> I[Next iteration:<br/>rules, thresholds, models]
-    I --> G
-```
+1. A local **generator** model (GLM) writes candidate attacks in plain, paraphrased and obfuscated forms.
+2. An **evaluator** model from a different family labels the candidates and approves them into the dataset.
+3. The dataset is split by attack family, with a held-out set that is never used for tuning.
+4. The **pipeline** is scored on it and the metrics go to the dashboard.
+5. Agents change rules, thresholds or models, and the next iteration starts.
 
 Splits are by attack family, never random, so the held-out set measures generalization to attacks
 the pipeline was not tuned on. All variants of one attack stay in the same split.
