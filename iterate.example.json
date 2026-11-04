@@ -11,7 +11,7 @@
     "heldout_families": ["jackhhao/jailbreak-classification"],
     "proportions": {"train": 0.7, "dev": 0.15, "test": 0.15}
   },
-  "sample_cap": 8,
+  "sample_cap": 25,
   "model": "REPLACE_WITH_PINNED_SERVED_MODEL_ID",
   "max_tokens": 128,
   "pipeline_version": "end-to-end-v0",

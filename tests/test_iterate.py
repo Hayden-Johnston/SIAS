@@ -1,8 +1,10 @@
 """Iteration integration tests use synthetic data and a fake queued classifier."""
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -15,6 +17,7 @@ spec.loader.exec_module(iterate)
 
 class FakeClient:
     calls = 0
+    batches: ClassVar[list[int]] = []
     status = 'done'
     content = '0'
 
@@ -22,6 +25,7 @@ class FakeClient:
         pass
 
     def submit_batch(self, model, prompts, **params):
+        type(self).batches.append(len(prompts))
         return list(range(len(prompts)))
 
     def drain(self):
@@ -36,6 +40,7 @@ class FakeClient:
 def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(iterate, 'Client', FakeClient)
     FakeClient.calls, FakeClient.status, FakeClient.content = 0, 'done', '0'
+    FakeClient.batches = []
     raw = tmp_path / 'raw.jsonl'
     raw.write_text(''.join(json.dumps({'text': f'synthetic fixture {i}', 'label': i % 2}) + '\n'
                            for i in range(100)))
@@ -65,14 +70,34 @@ def test_complete_replay_dashboard_and_source_change(setup, monkeypatch):
     first = run(setup)
     _, data, reports = setup
     metrics = run_metrics(data / 'runs')
-    assert len(metrics) == 2
+    assert len(metrics) == 4
     assert {m['evaluation_split'] for m in metrics} == {'validation', 'held_out'}
-    assert all(m['records'] == 4 and not m['evaluator_approved'] for m in metrics)
+    work = next(data.glob('runs/.iterations/*/state.json')).parent
+    for m in metrics:
+        name = m['stages'][0]['name']
+        source_split = 'dev' if m['evaluation_split'] == 'validation' else 'heldout'
+        full_count = first['split_counts'][source_split]['records']
+        assert full_count > 4
+        assert m['records'] == (full_count if name == 'rules' else 4)
+        assert m['stages'][0]['reached'] == m['records']
+        assert not m['evaluator_approved']
+        assert sum(m['metrics'][k] for k in ('tp', 'fp', 'fn', 'tn')) == m['records']
+        if name == 'maya':
+            rows = [r for _, r in iterate.read_rows(work / 'splits' / f'{source_split}.jsonl')]
+            expected = sorted(rows, key=lambda r: hashlib.sha256(r['id'].encode()).hexdigest())[:4]
+            actual = [r for _, r in iterate.read_rows(work / f"{m['evaluation_split']}-maya.jsonl")]
+            assert actual == expected
+    assert FakeClient.batches == [4, 4]
     before = {p: p.read_bytes() for p in data.rglob('*') if p.is_file()}
     monkeypatch.setattr(iterate.rules, 'write_cache', lambda *a: pytest.fail('rescored rules'))
     assert run(setup) == first
     assert all(p.read_bytes() == value for p, value in before.items())
     assert FakeClient.calls == 2
+    # Resume after losing the final checkpoint must also use only saved stage caches.
+    (work / 'complete.json').unlink()
+    monkeypatch.setattr(iterate, 'Client', lambda *a, **k: pytest.fail('inference on resume'))
+    assert run(setup) == first
+    assert all(p.read_bytes() == value for p, value in before.items())
     assert len(list(reports.glob('*.md'))) == 1
     monkeypatch.undo()
     monkeypatch.setattr(iterate, 'Client', FakeClient)
@@ -81,15 +106,15 @@ def test_complete_replay_dashboard_and_source_change(setup, monkeypatch):
         writer.write(json.dumps({'text': 'synthetic extra', 'label': 0}) + '\n')
     second = run(setup)
     assert second['iteration'] == 2
-    assert len(run_metrics(data / 'runs')) == 4
+    assert len(run_metrics(data / 'runs')) == 8
 
 
 def test_resume_after_interrupted_model_cache(setup):
     FakeClient.status = 'pending'
     with pytest.raises(ProxyError, match='incomplete'):
         run(setup)
-    assert not list(setup[1].glob('runs/iteration-*/manifest.json'))
-    rule = next(setup[1].glob('runs/.iterations/*/validation-rules.jsonl'))
+    assert not list(setup[1].glob('runs/iteration-*-maya/manifest.json'))
+    rule = next(setup[1].glob('runs/.iterations/*/validation-rules-scores.jsonl'))
     before = rule.read_bytes()
     FakeClient.status = 'done'
     result = run(setup)
@@ -102,14 +127,14 @@ def test_failed_request_stops_before_drain(setup):
     with pytest.raises(ProxyError, match='operator review'):
         run(setup)
     assert FakeClient.calls == 0
-    assert not list(setup[1].glob('runs/iteration-*/manifest.json'))
+    assert not list(setup[1].glob('runs/iteration-*-maya/manifest.json'))
 
 
 def test_invalid_classifier_output_never_becomes_benign(setup):
     FakeClient.content = 'synthetic invalid response'
     with pytest.raises(ValueError, match='exactly 0 or 1'):
         run(setup)
-    assert not list(setup[1].glob('runs/iteration-*/manifest.json'))
+    assert not list(setup[1].glob('runs/iteration-*-maya/manifest.json'))
 
 
 @pytest.mark.parametrize('cap', [0, -1, True])
@@ -207,7 +232,7 @@ def test_red_team_unavailable_skips_cleanly(setup, monkeypatch, capsys, replay_o
     expected = 'replay-only cache miss' if replay_only else 'Maya unreachable'
     assert result['red_team']['status'] == expected
     assert result['red_team']['approved'] == 0
-    assert len(result['runs']) == 2
+    assert len(result['runs']) == 4
     assert 'red-team round skipped: ' + expected in capsys.readouterr().out
 
 
@@ -224,3 +249,20 @@ def test_red_team_refusal_stops_iteration(setup, monkeypatch):
         run(setup)
     assert not list(setup[1].rglob('complete.json'))
     assert client.batches == [1]
+
+
+def test_cap_above_budget_rejected_before_inference(setup):
+    config = json.loads(setup[0].read_text())
+    config['sample_cap'] = 26
+    setup[0].write_text(json.dumps(config))
+    with pytest.raises(ValueError, match='at most 25'):
+        run(setup)
+    assert FakeClient.calls == 0
+
+
+def test_max_cap_limits_total_classifier_prompts(setup):
+    config = json.loads(setup[0].read_text())
+    config['sample_cap'] = 25
+    setup[0].write_text(json.dumps(config))
+    run(setup)
+    assert FakeClient.batches == [25, 25]

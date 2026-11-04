@@ -117,6 +117,8 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
     for key in ('sample_cap', 'max_tokens'):
         if type(config[key]) is not int or config[key] < 1:
             raise ValueError(f'{key} must be a positive integer')
+    if config['sample_cap'] > 25:
+        raise ValueError('sample_cap must be at most 25 (50 Maya classifier prompts per iteration)')
     for key in ('model', 'pipeline_version'):
         if not isinstance(config[key], str) or not config[key].strip():
             raise ValueError(f'{key} must be a nonempty string')
@@ -188,51 +190,53 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
             split.split(work / 'dataset.jsonl', work / 'dataset.json',
                         config['split'], work / 'splits')
         manifests = []
-        for source_split, evaluation in [('dev', 'validation'), ('heldout', 'held_out')]:
-            sample, manifest = work / f'{evaluation}.jsonl', work / f'{evaluation}.json'
-            if not manifest.exists():
-                # Hash ordering is independent of source row order; cap the evaluated
-                # dataset, rather than fabricating model scores for unsampled rows.
-                rows = sorted((r for _, r in read_rows(work / 'splits' / f'{source_split}.jsonl')),
-                              key=lambda r: hashlib.sha256(r['id'].encode()).hexdigest())
-                selected = rows[:config['sample_cap']]
-                raw_sample = work / 'sample.jsonl'
-                atomic_write(raw_sample, ''.join(canonical_json(r) + '\n' for r in selected).encode())
-                normalize(raw_sample, sample, manifest)
-            rule_cache = work / f'{evaluation}-rules.jsonl'
-            if not rule_cache.exists():
-                rules.write_cache(sample, manifest, rule_cache)
-            maya_cache = work / f'{evaluation}-maya.jsonl'
-            if not maya_cache.exists():
-                client = Client(data / 'caches' / 'iterate-maya.sqlite', env_file=REPO / '.env')
-                model_cache(sample, maya_cache, client, config)
-            run_id = f"iteration-{state['iteration']:06d}-{evaluation}"
-            run_config = state | {
-                'run_id': run_id, 'pipeline_version': config['pipeline_version'],
-                'dataset': str(sample.resolve()), 'dataset_manifest': str(manifest.resolve()),
-                'evaluation_split': evaluation,
-                'stages': [
-                    {'name': name, 'version': version, 'threshold': threshold,
-                     'cache': str(cache.resolve()), 'cache_sha256': digest(cache)}
-                    for name, version, threshold, cache in [
-                        ('rules', 'rules-sha256-' + digest(rules.__file__),
-                         config['rule_threshold'], rule_cache),
-                        ('maya', config['model'] + f"-tokens-{config['max_tokens']}-classifier-" + digest(__file__),
-                         config['model_threshold'], maya_cache)]],
-            }
-            path = work / f'{evaluation}-run.json'
-            write_json(path, run_config)
-            manifests.append(replay(path, runs / run_id))
+        # Finish cheap full-split scoring before waiting for any shared Maya calls.
+        for name in ('rules', 'maya'):
+            for source_split, evaluation in [('dev', 'validation'), ('heldout', 'held_out')]:
+                stem = f'{evaluation}-{name}'
+                dataset, manifest = work / f'{stem}.jsonl', work / f'{stem}.json'
+                if not manifest.exists():
+                    source = work / 'splits' / f'{source_split}.jsonl'
+                    if name == 'maya':
+                        # Preserve the deterministic hash sample, independently of source order.
+                        rows = sorted((r for _, r in read_rows(source)),
+                                      key=lambda r: hashlib.sha256(r['id'].encode()).hexdigest())
+                        source = work / 'sample.jsonl'
+                        atomic_write(source, ''.join(canonical_json(r) + '\n'
+                                                    for r in rows[:config['sample_cap']]).encode())
+                    normalize(source, dataset, manifest)
+                cache = work / f'{stem}-scores.jsonl'
+                if not cache.exists():
+                    if name == 'rules':
+                        rules.write_cache(dataset, manifest, cache)
+                    else:
+                        client = Client(data / 'caches' / 'iterate-maya.sqlite', env_file=REPO / '.env')
+                        model_cache(dataset, cache, client, config)
+                version = ('rules-sha256-' + digest(rules.__file__) if name == 'rules' else
+                           config['model'] + f"-tokens-{config['max_tokens']}-classifier-" + digest(__file__))
+                run_id = f"iteration-{state['iteration']:06d}-{stem}"
+                run_config = state | {
+                    'run_id': run_id, 'pipeline_version': config['pipeline_version'],
+                    'dataset': str(dataset.resolve()), 'dataset_manifest': str(manifest.resolve()),
+                    'evaluation_split': evaluation,
+                    'stages': [{'name': name, 'version': version,
+                                'threshold': config['rule_threshold' if name == 'rules' else 'model_threshold'],
+                                'cache': str(cache.resolve()), 'cache_sha256': digest(cache)}],
+                }
+                path = work / f'{stem}-run.json'
+                write_json(path, run_config)
+                manifests.append(replay(path, runs / run_id))
         reports.mkdir(parents=True, exist_ok=True)
         report = reports / f"{state['timestamp'][:10]}-iteration-{state['iteration']:06d}.md"
         lines = [f"# Iteration {state['iteration']}: {config['pipeline_version']}", '',
-                 ('Capped deterministic samples; source labels plus optional evaluator-approved rows. '
-                 'Rates apply only to these samples. Full counts and Wilson intervals are in run manifests.'), '']
+                 ('Rules cover full dev/heldout splits; Maya covers capped deterministic samples only. '
+                  'Source labels plus optional evaluator-approved rows. Counts and Wilson intervals '
+                  'are in each stage run manifest.'), '']
         lines.append(f"Red-team round: {red_team['status']}; generated {red_team['generated']}, "
                      f"approved {red_team['approved']}; approval rate {red_team['approval_rate']}.")
         for result in manifests:
             m = result['metrics']
-            lines.append(f"- {result['evaluation_split']}: {result['records']} rows; "
+            lines.append(f"- {result['evaluation_split']} / {result['stages'][0]['name']}: {result['records']} rows; "
                          f"TP {m['tp']}, FP {m['fp']}, FN {m['fn']}, TN {m['tn']}; "
                          f"cached stage latency {sum(s['cached_latency_ms_total'] for s in result['stages']):.3f} ms.")
         atomic_write(report, ('\n'.join(lines) + '\n').encode())

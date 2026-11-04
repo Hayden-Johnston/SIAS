@@ -17,7 +17,7 @@ keeps generating new attacks to test it.
 | **Target** | 99.999% attack detection with under 0.02% false positives on a held-out set |
 | **Scope** | Prompt-level attacks only: no malware, exploit code or anything beyond prompts |
 | **Runs on** | One local rig (AMD GPUs, ROCm). No cloud inference in the pipeline |
-| **Status** | Phase 1 infrastructure. Scheduled end-to-end sampled scoring available |
+| **Status** | Phase 1 infrastructure. Scheduled full-split rules and sampled model scoring available |
 
 ![SIAS architecture: orchestrator agents direct a red team of open-weight models that builds prompt-injection and jailbreak datasets, which iteratively improve the security controls](docs/images/architecture.png)
 
@@ -180,12 +180,14 @@ uv run python ops/iterate.py                 # defaults to iterate.local.json
 ```
 
 The iteration refreshes source loaders and family splits when inputs, configuration or producer
-code change. It scores rules and a queued Maya classifier on the same deterministic capped sample
-of each dev (validation) and heldout split, then replays both stages. It writes numbered manifests
-under the configured data directory's `runs/` and a dated report in `reports/`. These are exploratory
-source-label metrics, with `evaluator_approved: false`; the sample cap is per split, and no scores
-are fabricated for rows outside the sample. The generated report and run IDs identify each split.
-Full split counts and the cap are recorded in `runs/.iterations/*/complete.json`.
+code change. Rules score every dev (validation) and heldout row. The queued Maya classifier scores
+only a deterministic hash-selected sample of each split: `sample_cap` is 1–25 per split, at most
+50 classifier prompts per iteration. Each stage/split gets a separate numbered run manifest under
+the configured data directory's `runs/`, visible in dashboard Metrics, and a dated report in
+`reports/`. These are independent stage metrics, with Maya rates applying only to its sample.
+Labels are exploratory source labels (`evaluator_approved: false`); no model scores are fabricated
+for unsampled rows. Full split counts and the cap are recorded in
+`runs/.iterations/*/complete.json`.
 
 An optional `red_team` section (see `iterate.example.json`) enables a capped generation and
 CPU evaluator round before splitting. It defaults off. Set `enabled: true`, `groups` (each request

@@ -177,3 +177,18 @@ here is a provenance declaration, not a cryptographic attestation or an access-c
 Stage latency is the original cached latency summed over reached prompts (all chunks for chunk
 stages), not the time to replay scores, and includes no claim about server loading, queue time, or current end-to-end inference.
 The dashboard can read aggregate `manifest.json`; it must not read normalized payload files.
+
+## Scheduled iteration stage counts
+
+`ops/iterate.py` writes four independent runs per iteration: `validation-rules`,
+`validation-maya`, `held_out-rules`, and `held_out-maya` (prefixed with the iteration number).
+Rules cover every row of each split; Maya covers only the first `sample_cap` rows ordered by
+SHA-256 of row ID. The cap must be 1–25 per split, so classification uses at most 50 prompts
+per iteration. Optional red-team generation has its own configured budget.
+Each manifest's `records`, stage `reached`, rates and intervals describe its own dataset.
+These runs compare stages independently; they do not estimate a combined cascade's performance.
+Dashboard Metrics reads all four manifests without reading payloads.
+
+Completed rule caches and model responses are reused after interruption. Identical completed
+iterations return their checkpoint without inference or rewriting measured latencies. The generic
+replay runner remains inference-free and needs no changes for these single-stage runs.
