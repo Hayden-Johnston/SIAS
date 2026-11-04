@@ -20,6 +20,17 @@ def canonical_json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def utc_timestamp(value, name="timestamp"):
+    """Parse a timezone-aware ISO 8601 timestamp and return canonical UTC."""
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"{name} must be ISO 8601 with timezone") from None
+    if stamp.tzinfo is None or stamp.utcoffset() is None:
+        raise ValueError(f"{name} must include a timezone")
+    return stamp.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
 def validate_record(record):
     """Return a canonical record; errors name fields, never include payload values.
 
@@ -38,13 +49,7 @@ def validate_record(record):
         raise ValueError("variant_type must be plain, paraphrase, or obfuscated")
     if result["publishable"] not in {"yes", "no"}:
         raise ValueError("publishable must be yes or no")
-    try:
-        stamp = datetime.fromisoformat(result["timestamp"])
-    except ValueError:
-        raise ValueError("timestamp must be an ISO 8601 timestamp with timezone") from None
-    if stamp.tzinfo is None or stamp.utcoffset() is None:
-        raise ValueError("timestamp must include a timezone")
-    result["timestamp"] = stamp.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    result["timestamp"] = utc_timestamp(result["timestamp"])
     return result
 
 

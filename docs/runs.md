@@ -46,29 +46,28 @@ A score greater than or equal to a stage's threshold catches the prompt and stop
 Later stages need no cache entry for prompts caught earlier. Missing a score for a reached stage
 fails the run; it does not implicitly download data, run a model, or mark the prompt benign.
 
-## Run files and resume
+## Run files
 
-- `identity.json`: binds the config, runner version, dataset, manifest, cache hashes, and thresholds.
-- `results.jsonl`: checkpoint journal with prompt IDs, labels/families, each reached stage's score
-  and cached latency, and final detection. It contains no text.
-- `manifest.json`: completion marker with checksum/link to the per-stage score journal, aggregate
-  outcome counts, rates, confidence intervals, attack distribution, stage score summaries,
-  caught/passed counts, and cached latency totals/means. No payload text or local paths.
-- `.lock`: an advisory Linux lock prevents concurrent writers and is released by the OS on exit.
+- `results.jsonl`: prompt IDs, labels/families, each reached stage's score and cached latency,
+  and final detection. It contains no text.
+- `manifest.json`: completion marker with `identity_sha256` binding the config, runner version,
+  dataset, manifest, cache hashes, and thresholds; `results_sha256` pins the results bytes.
+  It includes outcome counts, rates, confidence intervals, attack distribution, stage score
+  summaries, caught/passed counts, and cached latency totals/means. No payload text or local paths.
 
-Re-run the same command to resume. Complete checkpoint records are verified against the pinned
-inputs; only an unterminated final line is discarded after an interruption. Changed config,
-dataset, cache, stage versions, thresholds, or corrupt complete checkpoint records are rejected.
-Use a new run directory for changed inputs. Missing cache scores require building a corrected
-cache/config and a new directory; they are not a resumable inference queue.
+Replay computes all results in memory before writing either output. Each file is replaced
+atomically, results first and manifest last. Re-running recomputes and replaces the outputs,
+including when inputs change; there are no checkpoints, identity files, or writer locks.
+Use one writer per run directory. Inputs must remain unchanged while replay runs.
 
-Journal writes are flushed per prompt. Process interruption is supported; power-loss durability
-is not guaranteed because there is no per-row fsync. Manifests are replaced atomically on success.
-Consumers must verify `results_sha256` before using a completed manifest. A run is complete only
-when its manifest exists and agrees with its identity and results. Replay still validates all
-inputs/checkpoints, so resume is not constant time. Inputs must remain unchanged while replay runs.
-The implementation loads record metadata and score caches into memory; test memory limits before
-large multi-stage runs. Raw text is discarded from each dataset row before results are retained.
+The two replacements are not one transaction. After an interruption an old manifest may remain;
+consumers must verify `results_sha256` and the expected `identity_sha256` before accepting a run.
+A missing manifest or mismatched checksum indicates an incomplete or stale pair; rerun to replace
+it. Power-loss durability is not guaranteed because writes do not use fsync.
+
+The implementation loads record metadata, score caches, and results into memory; test memory
+limits before large multi-stage runs. Raw text is discarded from each dataset row before results
+are retained. Missing cache scores require building a corrected cache/config before replay.
 
 ## Metrics and dataset authority
 

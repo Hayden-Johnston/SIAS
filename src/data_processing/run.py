@@ -1,4 +1,4 @@
-"""Replay a threshold cascade from local cached scores, with resumable checkpoints."""
+"""Replay a threshold cascade from local cached scores, without inference."""
 
 import argparse
 import hashlib
@@ -7,11 +7,10 @@ import math
 import os
 import tempfile
 from collections import Counter
-from datetime import UTC, datetime
 from pathlib import Path
 from statistics import NormalDist
 
-from data_processing.normalize import canonical_json, validate_record
+from data_processing.normalize import canonical_json, utc_timestamp, validate_record
 
 
 def digest(path):
@@ -42,13 +41,13 @@ def read_rows(path):
             raise ValueError("invalid UTF-8") from None
 
 
-def atomic_json(path, value):
+def atomic_write(path, content):
     path = Path(path)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as writer:
             temporary = Path(writer.name)
-            writer.write((canonical_json(value) + "\n").encode("utf-8"))
+            writer.write(content)
         os.replace(temporary, path)
     finally:
         if temporary is not None:
@@ -99,13 +98,7 @@ def prepare(config_path):
             raise ValueError(f"{field} must be a nonempty string")
     if type(config["iteration"]) is not int or config["iteration"] < 0:
         raise ValueError("iteration must be a nonnegative integer")
-    try:
-        stamp = datetime.fromisoformat(config["timestamp"])
-    except ValueError:
-        raise ValueError("run timestamp must be ISO 8601 with timezone") from None
-    if stamp.tzinfo is None or stamp.utcoffset() is None:
-        raise ValueError("run timestamp must include a timezone")
-    config["timestamp"] = stamp.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    config["timestamp"] = utc_timestamp(config["timestamp"], "run timestamp")
     if config["evaluation_split"] not in {"train", "validation", "held_out"}:
         raise ValueError("evaluation_split must be train, validation, or held_out")
     if not isinstance(config["stages"], list) or not config["stages"]:
@@ -126,7 +119,7 @@ def prepare(config_path):
         if row["id"] in ids:
             raise ValueError("duplicate dataset id")
         ids.add(row["id"])
-        # Discard payload text before checkpointing or reporting.
+        # Discard payload text before retaining results or reporting.
         rows.append({key: row[key] for key in ("id", "label", "attack_family")})
     if dataset_manifest.get("records") != len(rows):
         raise ValueError("dataset manifest record count mismatch")
@@ -185,79 +178,45 @@ def evaluate(row, stages):
 def replay(config_path, run_directory):
     config, dataset_manifest, rows, stages, identity, inputs = prepare(config_path)
     root = Path(run_directory)
-    outputs = [root / name for name in ("identity.json", "results.jsonl", "manifest.json", ".lock")]
+    outputs = [root / name for name in ("results.jsonl", "manifest.json")]
     if inputs & {path.resolve() for path in outputs}:
         raise ValueError("run outputs must not overwrite input files")
+    results = [evaluate(row, stages) for row in rows]
+    results_bytes = "".join(canonical_json(row) + "\n" for row in results).encode("utf-8")
+    results_path, manifest_path = outputs
+    stage_results = []
+    for stage, _ in stages:
+        reached = [entry for row in results for entry in row["stages"]
+                   if entry["stage"] == stage["name"]]
+        latency = sum(entry["latency_ms"] for entry in reached)
+        stage_results.append({"name": stage["name"], "version": stage["version"],
+                              "threshold": stage["threshold"], "reached": len(reached),
+                              "caught": sum(entry["detected"] for entry in reached),
+                              "passed": sum(not entry["detected"] for entry in reached),
+                              "score_summary": {
+                                  "min": min((entry["score"] for entry in reached), default=None),
+                                  "max": max((entry["score"] for entry in reached), default=None),
+                                  "mean": sum(entry["score"] for entry in reached) / len(reached)
+                                  if reached else None,
+                              },
+                              "cached_latency_ms_total": latency,
+                              "cached_latency_ms_mean": latency / len(reached) if reached else None})
+    manifest = {
+        "schema_version": 1, "identity_sha256": identity, "status": "complete",
+        "run_id": config["run_id"], "timestamp": config["timestamp"],
+        "iteration": config["iteration"], "pipeline_version": config["pipeline_version"],
+        "dataset_sha256": dataset_manifest["output_sha256"],
+        "evaluation_split": config["evaluation_split"],
+        "evaluator_approved": dataset_manifest.get("evaluator_approved") is True,
+        "records": len(results), "metrics": metrics(results),
+        "attack_distribution": dict(Counter(row["attack_family"] for row in rows if row["label"] == 1)),
+        "stages": stage_results, "results_file": "results.jsonl",
+        "results_sha256": hashlib.sha256(results_bytes).hexdigest(),
+    }
     root.mkdir(parents=True, exist_ok=True)
-    identity_path, journal_path, manifest_path, lock_path = outputs
-    # Single writer. The OS releases the advisory lock even after a crash.
-    import fcntl
-    with lock_path.open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise ValueError("run directory has an active writer") from None
-        if identity_path.exists():
-            if load_json(identity_path) != {"identity_sha256": identity}:
-                raise ValueError("run inputs/config changed; use a new run directory")
-        elif journal_path.exists() or manifest_path.exists():
-            raise ValueError("run artifacts exist without an identity; use a new directory")
-        else:
-            atomic_json(identity_path, {"identity_sha256": identity})
-        results = []
-        with journal_path.open("a+b") as journal:
-            journal.seek(0)
-            while line := journal.readline():
-                if len(results) >= len(rows):
-                    raise ValueError("checkpoint has extra records")
-                if not line.endswith(b"\n"):
-                    journal.truncate(journal.tell() - len(line))
-                    break  # A process interruption can leave only the final line incomplete.
-                try:
-                    saved = json.loads(line.decode("utf-8"))
-                except (ValueError, UnicodeError):
-                    raise ValueError("invalid checkpoint JSON or UTF-8") from None
-                expected = evaluate(rows[len(results)], stages)
-                if saved != expected:
-                    raise ValueError("checkpoint differs from pinned inputs")
-                results.append(saved)
-            journal.seek(0, 2)
-            for row in rows[len(results):]:
-                result = evaluate(row, stages)
-                journal.write((canonical_json(result) + "\n").encode())
-                journal.flush()
-                results.append(result)
-        stage_results = []
-        for stage, _ in stages:
-            reached = [entry for row in results for entry in row["stages"]
-                       if entry["stage"] == stage["name"]]
-            latency = sum(entry["latency_ms"] for entry in reached)
-            stage_results.append({"name": stage["name"], "version": stage["version"],
-                                  "threshold": stage["threshold"], "reached": len(reached),
-                                  "caught": sum(entry["detected"] for entry in reached),
-                                  "passed": sum(not entry["detected"] for entry in reached),
-                                  "score_summary": {
-                                      "min": min((entry["score"] for entry in reached), default=None),
-                                      "max": max((entry["score"] for entry in reached), default=None),
-                                      "mean": sum(entry["score"] for entry in reached) / len(reached)
-                                      if reached else None,
-                                  },
-                                  "cached_latency_ms_total": latency,
-                                  "cached_latency_ms_mean": latency / len(reached) if reached else None})
-        manifest = {
-            "schema_version": 1, "identity_sha256": identity, "status": "complete",
-            "run_id": config["run_id"], "timestamp": config["timestamp"],
-            "iteration": config["iteration"], "pipeline_version": config["pipeline_version"],
-            "dataset_sha256": dataset_manifest["output_sha256"],
-            "evaluation_split": config["evaluation_split"],
-            "evaluator_approved": dataset_manifest.get("evaluator_approved") is True,
-            "records": len(results), "metrics": metrics(results),
-            "attack_distribution": dict(Counter(row["attack_family"] for row in rows if row["label"] == 1)),
-            "stages": stage_results, "results_file": "results.jsonl",
-            "results_sha256": digest(journal_path),
-        }
-        atomic_json(manifest_path, manifest)
-        return manifest
+    atomic_write(results_path, results_bytes)
+    atomic_write(manifest_path, (canonical_json(manifest) + "\n").encode("utf-8"))
+    return manifest
 
 
 def main():

@@ -1,8 +1,12 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from data_processing import run
 from data_processing.normalize import normalize
 from data_processing.run import digest, metrics, rate, replay
 
@@ -55,39 +59,48 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual([stage["reached"] for stage in first["stages"]], [4, 3])
         self.assertEqual([stage["caught"] for stage in first["stages"]], [1, 1])
         self.assertEqual([stage["cached_latency_ms_total"] for stage in first["stages"]], [8, 6])
+        results_before = (self.run_directory / "results.jsonl").read_bytes()
         before = (self.run_directory / "manifest.json").read_bytes()
         self.assertEqual(first, self.replay())
         self.assertEqual(before, (self.run_directory / "manifest.json").read_bytes())
+        self.assertEqual(results_before, (self.run_directory / "results.jsonl").read_bytes())
+        self.assertEqual({p.name for p in self.run_directory.iterdir()},
+                         {"results.jsonl", "manifest.json"})
         self.assertEqual(first["results_sha256"], digest(self.run_directory / "results.jsonl"))
         self.assertFalse(first["evaluator_approved"])
         for path in self.run_directory.iterdir():
             self.assertNotIn("Synthetic fixture text", path.read_text())
 
-    def test_resume_after_partial_final_journal_line(self):
-        expected = self.replay()
-        journal = self.run_directory / "results.jsonl"
-        complete = journal.read_bytes()
-        lines = complete.splitlines(keepends=True)
-        journal.write_bytes(b"".join(lines[:2]) + b'{"id": "unfinished')
-        (self.run_directory / "manifest.json").unlink()
-        self.assertEqual(expected, self.replay())
-        self.assertEqual(complete, journal.read_bytes())
-
-    def test_checkpoint_corruption_is_rejected(self):
-        self.replay()
-        journal = self.run_directory / "results.jsonl"
-        rows = [json.loads(line) for line in journal.read_text().splitlines()]
-        rows[0]["stages"][0]["score"] = 0.99
-        journal.write_text("".join(json.dumps(row) + "\n" for row in rows))
-        with self.assertRaisesRegex(ValueError, "checkpoint differs"):
-            self.replay()
-
-    def test_config_change_requires_new_run_directory(self):
-        self.replay()
-        self.config["stages"][0]["threshold"] = 0.7
+    def test_changed_config_replaces_outputs(self):
+        before = self.replay()
+        self.config["stages"][1]["threshold"] = 0.95
         self.save_config()
-        with self.assertRaisesRegex(ValueError, "inputs/config changed"):
+        after = self.replay()
+        self.assertNotEqual(before["identity_sha256"], after["identity_sha256"])
+        self.assertNotEqual(before["results_sha256"], after["results_sha256"])
+        self.assertEqual(after["metrics"]["fp"], 0)
+
+    def test_failed_manifest_replace_leaves_detectable_stale_pair(self):
+        before = self.replay()
+        manifest = self.run_directory / "manifest.json"
+        original = manifest.read_bytes()
+        self.config["stages"][1]["threshold"] = 0.95
+        self.save_config()
+        replace = run.os.replace
+
+        def fail_manifest(source, destination):
+            if destination == manifest:
+                raise OSError("synthetic replacement failure")
+            replace(source, destination)
+
+        with (patch.object(run.os, "replace", side_effect=fail_manifest),
+              self.assertRaises(OSError)):
             self.replay()
+        self.assertEqual(manifest.read_bytes(), original)
+        self.assertNotEqual(before["results_sha256"], digest(self.run_directory / "results.jsonl"))
+        self.assertEqual({p.name for p in self.run_directory.iterdir()},
+                         {"results.jsonl", "manifest.json"})
+        self.assertEqual(self.replay()["results_sha256"], digest(self.run_directory / "results.jsonl"))
 
     def test_cache_mutation_is_rejected_before_run_creation(self):
         (self.root / "first.jsonl").write_text("changed\n")
@@ -109,7 +122,18 @@ class ReplayTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing required cached score"):
             self.replay()
         self.assertFalse((self.run_directory / "manifest.json").exists())
-        self.assertEqual(len((self.run_directory / "results.jsonl").read_text().splitlines()), 1)
+        self.assertFalse((self.run_directory / "results.jsonl").exists())
+
+    def test_missing_score_preserves_previous_outputs(self):
+        self.replay()
+        before = {p.name: p.read_bytes() for p in self.run_directory.iterdir()}
+        cache = self.root / "second.jsonl"
+        cache.write_text("")
+        self.config["stages"][1]["cache_sha256"] = digest(cache)
+        self.save_config()
+        with self.assertRaisesRegex(ValueError, "missing required cached score"):
+            self.replay()
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.run_directory.iterdir()})
 
     def test_invalid_scores_and_ids_are_rejected(self):
         cache = self.root / "first.jsonl"
@@ -137,6 +161,11 @@ class ReplayTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "timestamp"):
                 self.replay()
 
+    def test_timestamp_is_canonical_utc(self):
+        self.config["timestamp"] = "2026-11-04T02:00:00+02:00"
+        self.save_config()
+        self.assertEqual(self.replay()["timestamp"], "2026-11-04T00:00:00Z")
+
     def test_threshold_boundary_is_inclusive(self):
         self.config["stages"][0]["threshold"] = 0.9
         self.save_config()
@@ -159,8 +188,6 @@ class ReplayTests(unittest.TestCase):
             replay(self.root / "manifest.json", self.root)
 
     def test_cli_returns_only_aggregate_manifest(self):
-        import subprocess
-        import sys
         result = subprocess.run(
             [sys.executable, "-m", "data_processing.run", str(self.config_path),
              str(self.run_directory)], capture_output=True, text=True, check=True,
@@ -168,19 +195,6 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["records"], 4)
         self.assertNotIn("Synthetic fixture text", result.stdout + result.stderr)
 
-    def test_active_writer_prevents_replay(self):
-        import fcntl
-        self.run_directory.mkdir()
-        with (self.run_directory / ".lock").open("a") as writer:
-            fcntl.flock(writer, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with self.assertRaisesRegex(ValueError, "active writer"):
-                self.replay()
-
-    def test_missing_identity_refuses_existing_artifacts(self):
-        self.run_directory.mkdir()
-        (self.run_directory / "results.jsonl").touch()
-        with self.assertRaisesRegex(ValueError, "without an identity"):
-            self.replay()
 
 
 class MetricTests(unittest.TestCase):
