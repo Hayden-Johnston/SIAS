@@ -71,29 +71,47 @@ class MeasureResultsTests(unittest.TestCase):
         self.assertEqual(m["true_positives"], 1)
         self.assertEqual(m["true_negatives"], 1)
 
-    def test_empty_input_raises_zero_division(self):
-        # BUG: total_lines=0 causes ZeroDivisionError on mean_time
-        with self.assertRaises(ZeroDivisionError):
-            measure_results({})
+    def test_empty_input(self):
+        m = measure_results({})
+        self.assertEqual(m["average_time_ms"], 0)
+        self.assertIsNone(m["accuracy"])
+        self.assertIsNone(m["precision"])
+        self.assertIsNone(m["tpr"])
+        self.assertIsNone(m["fpr"])
+        self.assertIsNone(m["fnr"])
+        self.assertIsNone(m["tnr"])
+        self.assertIsNone(m["fdr"])
+        self.assertEqual(m["total_lines"], 0)
 
-    def test_all_benign_raises_zero_division(self):
-        # BUG: total_attacks=0 causes ZeroDivisionError on fnr;
-        #       also precision divides by (tp+fp)=0
+    def test_all_benign(self):
         results = {
             "a": [0.1, 0, 100.0],
             "b": [0.2, 0, 200.0],
         }
-        with self.assertRaises(ZeroDivisionError):
-            measure_results(results)
+        m = measure_results(results)
+        self.assertEqual(m["true_negatives"], 2)
+        self.assertEqual(m["accuracy"], 100.0)
+        self.assertEqual(m["fpr"], 0.0)
+        self.assertEqual(m["tnr"], 100.0)
+        self.assertIsNone(m["precision"])
+        self.assertIsNone(m["tpr"])
+        self.assertIsNone(m["fnr"])
+        self.assertIsNone(m["fdr"])
 
-    def test_all_attack_raises_zero_division(self):
-        # BUG: total_benign=0 causes ZeroDivisionError on fpr
+    def test_all_attack(self):
         results = {
             "a": [0.9, 1, 100.0],
             "b": [0.8, 1, 200.0],
         }
-        with self.assertRaises(ZeroDivisionError):
-            measure_results(results)
+        m = measure_results(results)
+        self.assertEqual(m["true_positives"], 2)
+        self.assertEqual(m["accuracy"], 100.0)
+        self.assertEqual(m["precision"], 1.0)
+        self.assertEqual(m["tpr"], 100.0)
+        self.assertEqual(m["fnr"], 0.0)
+        self.assertEqual(m["fdr"], 0.0)
+        self.assertIsNone(m["fpr"])
+        self.assertIsNone(m["tnr"])
 
 
 class MeasureAllTests(unittest.TestCase):
