@@ -6,9 +6,8 @@ import json
 import os
 import tempfile
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-
 
 FIELDS = {
     "id", "text", "label", "label_source", "attack_family", "group_id",
@@ -40,12 +39,12 @@ def validate_record(record):
     if result["publishable"] not in {"yes", "no"}:
         raise ValueError("publishable must be yes or no")
     try:
-        stamp = datetime.fromisoformat(result["timestamp"].replace("Z", "+00:00"))
+        stamp = datetime.fromisoformat(result["timestamp"])
     except ValueError:
         raise ValueError("timestamp must be an ISO 8601 timestamp with timezone") from None
     if stamp.tzinfo is None or stamp.utcoffset() is None:
         raise ValueError("timestamp must include a timezone")
-    result["timestamp"] = stamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    result["timestamp"] = stamp.astimezone(UTC).isoformat().replace("+00:00", "Z")
     return result
 
 
@@ -55,7 +54,7 @@ def validate_mapping(mapping):
         raise ValueError("mapping accepts only fields and defaults")
     fields, defaults = mapping.get("fields", {}), mapping.get("defaults", {})
     if not isinstance(fields, dict) or not isinstance(defaults, dict):
-        raise ValueError("fields and defaults must be objects")
+        raise ValueError("fields and defaults must be objects")  # noqa: TRY004 - invalid external JSON value
     if (set(fields) | set(defaults)) - FIELDS:
         raise ValueError("mapping contains unknown schema fields")
     if set(fields) & set(defaults):
@@ -70,7 +69,7 @@ def validate_mapping(mapping):
 
 def adapt_record(row, fields, defaults):
     if not isinstance(row, dict):
-        raise ValueError("source row must be an object")
+        raise ValueError("source row must be an object")  # noqa: TRY004 - invalid external JSON value
     record = dict(defaults)
     for field, source_key in fields.items():
         if source_key not in row:

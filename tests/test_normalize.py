@@ -6,16 +6,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from data_processing.normalize import normalize, validate_record
+from data_processing.normalize import normalize
 
 
 def record(**changes):
-    row = dict(
-        id="fixture-1", text="Synthetic café\u200b\r\n", label=0,
-        label_source="synthetic-test", attack_family="benign", group_id="fixture-group",
-        variant_type="plain", source="synthetic", license="CC0-1.0", publishable="no",
-        timestamp="2026-11-04T08:00:00+02:00",
-    )
+    row = {
+        "id": "fixture-1", "text": "Synthetic café\u200b\r\n", "label": 0,
+        "label_source": "synthetic-test", "attack_family": "benign", "group_id": "fixture-group",
+        "variant_type": "plain", "source": "synthetic", "license": "CC0-1.0", "publishable": "no",
+        "timestamp": "2026-11-04T08:00:00+02:00",
+    }
     return row | changes
 
 
@@ -123,14 +123,17 @@ class NormalizeTests(unittest.TestCase):
     def test_cli_has_no_payload_output_on_failure(self):
         import sys
         from unittest.mock import patch
+
         from data_processing.normalize import main
 
         self.source.write_text("private synthetic fixture, invalid JSON")
         stderr = io.StringIO()
         args = ["normalize", str(self.source), str(self.output), "--manifest", str(self.manifest)]
-        with patch.object(sys, "argv", args), contextlib.redirect_stderr(stderr):
-            with self.assertRaises(SystemExit) as error:
-                main()
+        with (
+            patch.object(sys, "argv", args), contextlib.redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as error,
+        ):
+            main()
         self.assertEqual(error.exception.code, 2)
         self.assertNotIn("private synthetic fixture", stderr.getvalue())
 

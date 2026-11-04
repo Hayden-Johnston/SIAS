@@ -54,3 +54,14 @@ Usage and exact file contracts are in `docs/runs.md`. Work is on `codex` in
 `/tmp/llm-security-codex` for owner review/merge, following the dataset-normalization commit.
 The dashboard should consume only aggregate manifests. Evaluator hygiene and inference/cache
 production remain separate owners/stages.
+
+## Integration checks after board migration
+
+Claude migrated coordination from TASKS.md to board tickets while these commits were being
+finished. Handoff was logged on ticket 0001; no dashboard implementation was attempted here.
+Using the integration checkout's installed pytest/ruff binaries, all 29 tests pass (plus 16
+subtests), and ruff passes on both new modules and tests after style cleanup. Full prototype
+ruff still finds two pre-existing issues: import ordering in `measurements.py` and a static
+method argument named self in `worker.py`. Owner must resolve those before the full merge gate
+can pass. The current session cannot write the new sibling checkout path, so changes remain
+in the writable temporary clone; fetch that branch before the temporary checkout is removed.

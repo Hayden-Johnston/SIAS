@@ -7,7 +7,7 @@ import math
 import os
 import tempfile
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from statistics import NormalDist
 
@@ -100,12 +100,12 @@ def prepare(config_path):
     if type(config["iteration"]) is not int or config["iteration"] < 0:
         raise ValueError("iteration must be a nonnegative integer")
     try:
-        stamp = datetime.fromisoformat(config["timestamp"].replace("Z", "+00:00"))
+        stamp = datetime.fromisoformat(config["timestamp"])
     except ValueError:
         raise ValueError("run timestamp must be ISO 8601 with timezone") from None
     if stamp.tzinfo is None or stamp.utcoffset() is None:
         raise ValueError("run timestamp must include a timezone")
-    config["timestamp"] = stamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    config["timestamp"] = stamp.astimezone(UTC).isoformat().replace("+00:00", "Z")
     if config["evaluation_split"] not in {"train", "validation", "held_out"}:
         raise ValueError("evaluation_split must be train, validation, or held_out")
     if not isinstance(config["stages"], list) or not config["stages"]:

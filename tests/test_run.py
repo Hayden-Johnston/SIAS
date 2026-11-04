@@ -15,16 +15,16 @@ class ReplayTests(unittest.TestCase):
         source = self.root / "source.jsonl"
         with source.open("w") as writer:
             for index, label in enumerate([1, 0, 1, 0]):
-                row = dict(id=str(index), text="Synthetic fixture text", label=label,
-                           label_source="synthetic", attack_family="fixture" if label else "benign",
-                           group_id=str(index), variant_type="plain", source="synthetic",
-                           license="CC0-1.0", publishable="no", timestamp="2026-11-04T00:00:00Z")
+                row = {"id": str(index), "text": "Synthetic fixture text", "label": label,
+                           "label_source": "synthetic", "attack_family": "fixture" if label else "benign",
+                           "group_id": str(index), "variant_type": "plain", "source": "synthetic",
+                           "license": "CC0-1.0", "publishable": "no", "timestamp": "2026-11-04T00:00:00Z"}
                 writer.write(json.dumps(row) + "\n")
         normalize(source, self.root / "dataset.jsonl", self.root / "dataset.manifest.json")
-        self.config = dict(run_id="fixture-run", timestamp="2026-11-04T00:00:00Z", iteration=0,
-                           pipeline_version="fixture-v1", dataset="dataset.jsonl",
-                           dataset_manifest="dataset.manifest.json", evaluation_split="validation",
-                           stages=[])
+        self.config = {"run_id": "fixture-run", "timestamp": "2026-11-04T00:00:00Z", "iteration": 0,
+                           "pipeline_version": "fixture-v1", "dataset": "dataset.jsonl",
+                           "dataset_manifest": "dataset.manifest.json", "evaluation_split": "validation",
+                           "stages": []}
         self.add_stage("first", [("0", 0.9), ("1", 0.1), ("2", 0.2), ("3", 0.1)])
         self.add_stage("second", [("1", 0.9), ("2", 0.1), ("3", 0.1)])
         self.config_path = self.root / "config.json"
@@ -33,10 +33,10 @@ class ReplayTests(unittest.TestCase):
 
     def add_stage(self, name, scores):
         cache = self.root / f"{name}.jsonl"
-        cache.write_text("".join(json.dumps(dict(id=key, score=score, latency_ms=2.0)) + "\n"
+        cache.write_text("".join(json.dumps({"id": key, "score": score, "latency_ms": 2.0}) + "\n"
                                  for key, score in scores))
-        self.config["stages"].append(dict(name=name, version="fixture-v1", threshold=0.5,
-                                         cache=cache.name, cache_sha256=digest(cache)))
+        self.config["stages"].append({"name": name, "version": "fixture-v1", "threshold": 0.5,
+                                         "cache": cache.name, "cache_sha256": digest(cache)})
 
     def save_config(self):
         self.config_path.write_text(json.dumps(self.config))
@@ -47,7 +47,7 @@ class ReplayTests(unittest.TestCase):
     def test_cascade_counts_stage_latency_and_replay(self):
         first = self.replay()
         self.assertEqual({key: first["metrics"][key] for key in ("tp", "fp", "fn", "tn")},
-                         dict(tp=1, fp=1, fn=1, tn=1))
+                         {"tp": 1, "fp": 1, "fn": 1, "tn": 1})
         self.assertEqual(first["metrics"]["detection"]["value"], 0.5)
         self.assertEqual(first["metrics"]["detection"]["n"], 2)
         self.assertEqual(first["metrics"]["false_positive"]["value"], 0.5)
@@ -113,10 +113,10 @@ class ReplayTests(unittest.TestCase):
 
     def test_invalid_scores_and_ids_are_rejected(self):
         cache = self.root / "first.jsonl"
-        for entry in [dict(id="0", score=float("nan"), latency_ms=2),
-                      dict(id="0", score=True, latency_ms=2),
-                      dict(id="0", score=0.1, latency_ms=-1),
-                      dict(id="unknown", score=0.1, latency_ms=1)]:
+        for entry in [{"id": "0", "score": float("nan"), "latency_ms": 2},
+                      {"id": "0", "score": True, "latency_ms": 2},
+                      {"id": "0", "score": 0.1, "latency_ms": -1},
+                      {"id": "unknown", "score": 0.1, "latency_ms": 1}]:
             cache.write_text(json.dumps(entry) + "\n")
             self.config["stages"][0]["cache_sha256"] = digest(cache)
             self.save_config()
@@ -147,7 +147,7 @@ class ReplayTests(unittest.TestCase):
     def test_duplicate_cached_id_is_rejected(self):
         cache = self.root / "first.jsonl"
         with cache.open("a") as writer:
-            writer.write(json.dumps(dict(id="0", score=0.5, latency_ms=1)) + "\n")
+            writer.write(json.dumps({"id": "0", "score": 0.5, "latency_ms": 1}) + "\n")
         self.config["stages"][0]["cache_sha256"] = digest(cache)
         self.save_config()
         with self.assertRaisesRegex(ValueError, "duplicate id"):
