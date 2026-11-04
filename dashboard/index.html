@@ -10,7 +10,7 @@
 :root[data-theme="dark"] { color-scheme: dark; --bg: #151a21; --card: #202731; --ink: #edf0f4; --muted: #adb8c5; --line: #445061; }
 * { box-sizing: border-box; } body { margin: 0 auto; padding: 2rem; max-width: 1500px; font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--ink); }
 header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; } h1 { font-size: 1.5rem; } h2 { font-size: 1.15rem; } h3 { font-size: 1rem; margin-top: 0; }
-[hidden] { display: none !important; } nav { position: sticky; top: 0; background: var(--bg); padding: .6rem 0; display: flex; gap: 1rem; z-index: 1; } nav a[aria-current="page"] { font-weight: bold; }
+[hidden] { display: none !important; } nav { flex-wrap: wrap; position: sticky; top: 0; background: var(--bg); padding: .6rem 0; display: flex; gap: 1rem; z-index: 1; } nav a[aria-current="page"] { font-weight: bold; }
 .activity-plot { min-width: 850px; } .controls { display: flex; flex-wrap: wrap; gap: .5rem; }
 section { margin-top: 2.5rem; } button { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 5px; padding: .4rem .8rem; cursor: pointer; }
 #board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1rem; } .column { min-width: 0; } article { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; margin-bottom: .8rem; overflow-wrap: anywhere; }
@@ -26,9 +26,12 @@ a { color: #0072b2; } .swatch { display: inline-block; width: .8rem; height: .8r
 @media (max-width: 450px) { #board { grid-template-columns: 1fr; } }
 </style>
 <header><h1>llm-security</h1><button id="theme" type="button">Toggle theme</button></header>
-<nav aria-label="Views"><a href="#board">Board</a><a href="#activity">Activity</a><a href="#runs">Runs</a><a href="#metrics">Metrics</a></nav>
+<nav aria-label="Views"><a href="#updates">Updates</a><a href="#alerts">Alerts</a><a href="#board">Board</a><a href="#activity">Activity</a><a href="#runs">Runs</a><a href="#metrics">Metrics</a></nav>
+<aside id="alert-banner" hidden><a href="#alerts" id="alert-count"></a><div id="alert-top"></div></aside>
 <p id="refresh" class="muted" role="status">Loading board…</p>
-<main data-page="board"><section><h2>Board</h2><div id="board"></div></section>
+<main data-page="updates"><section><h2>Updates</h2><p id="updates-window" class="muted"></p><div id="updates"></div><button id="load-more">Load more · 48 h</button></section></main>
+<main data-page="alerts" hidden><section><h2>Alerts</h2><button id="notifications">Enable browser notifications</button><p id="notification-status" class="muted"></p><div id="alerts"></div></section></main>
+<main data-page="board" hidden><section><h2>Board</h2><div id="board"></div></section>
 </main>
 <main data-page="activity" hidden><section><h2>Agent activity</h2><div id="agent-states"></div>
 <div class="controls"><button id="earlier">← Earlier</button><button id="later">Later →</button><button id="zoom-in">Zoom in</button><button id="zoom-out">Zoom out</button><button id="live">Live · last 6 h</button></div>
@@ -56,8 +59,8 @@ document.querySelector('#theme').onclick = () => {
   document.documentElement.dataset.theme = dark ? 'light' : 'dark';
 };
 function route() {
-  const hash = location.hash.slice(1) || 'board';
-  const view = hash === 'run-report' ? 'runs' : ['board', 'activity', 'runs', 'metrics'].includes(hash) ? hash : 'board';
+  const hash = location.hash.slice(1) || 'updates';
+  const view = hash === 'run-report' ? 'runs' : ['updates', 'alerts', 'board', 'activity', 'runs', 'metrics'].includes(hash) ? hash : 'updates';
   for (const page of document.querySelectorAll('[data-page]')) page.hidden = page.dataset.page !== view;
   for (const link of document.querySelectorAll('nav a')) {
     if (link.hash === `#${view}`) link.setAttribute('aria-current', 'page');
@@ -65,9 +68,51 @@ function route() {
   }
 }
 addEventListener('hashchange', route); route();
+let updateHours = 48;
+let seenAlerts = null;
+let notificationsEnabled = localStorage.getItem('alert-notifications') === 'on';
+function notificationStatus() {
+  const supported = 'Notification' in window;
+  document.querySelector('#notifications').disabled = !supported;
+  document.querySelector('#notifications').textContent = notificationsEnabled ? 'Disable browser notifications' : 'Enable browser notifications';
+  document.querySelector('#notification-status').textContent = !supported ? 'Browser notifications unavailable.' : Notification.permission === 'denied' ? 'Notifications blocked in browser settings.' : 'New alerts can notify you while this tab is open.';
+}
+document.querySelector('#notifications').onclick = async () => {
+  if (notificationsEnabled) notificationsEnabled = false;
+  else notificationsEnabled = await Notification.requestPermission() === 'granted';
+  localStorage.setItem('alert-notifications', notificationsEnabled ? 'on' : 'off');
+  notificationStatus();
+};
+notificationStatus();
+function alertText(alert) {
+  return `${alert.kind} · ${alert.ticket ? '#' + alert.ticket + ' · ' + alert.title + ' · ' + alert.owner + ' · ' : ''}${alert.message}`;
+}
+function renderNews(data) {
+  const banner = document.querySelector('#alert-banner'); banner.hidden = !data.alerts.length;
+  document.querySelector('#alert-count').textContent = `${data.alerts.length} alerts · View all`;
+  const top = document.querySelector('#alert-top'); top.replaceChildren();
+  for (const alert of data.alerts.slice(0, 3)) top.append(el('p', alertText(alert)));
+  const alerts = document.querySelector('#alerts'); alerts.replaceChildren();
+  for (const alert of data.alerts) {
+    const card = el('article'); card.append(el('p', alertText(alert)), el('small', `Since ${pacific(alert.timestamp)}${alert.until ? ' · until ' + pacific(alert.until) : ''}`)); alerts.append(card);
+    if (seenAlerts && !seenAlerts.has(alert.id) && notificationsEnabled && 'Notification' in window && Notification.permission === 'granted') {
+      try { const notice = new Notification('SIAS alert', {body: alertText(alert), tag: alert.id}); notice.onclick = () => { window.focus(); location.hash = 'alerts'; }; } catch { /* Some browsers require service workers. */ }
+    }
+  }
+  seenAlerts = new Set(data.alerts.map(alert => alert.id));
+  if (!data.alerts.length) alerts.append(el('p', 'No alerts', 'muted'));
+  document.querySelector('#updates-window').textContent = `Last ${updateHours} hours · Pacific time`;
+  const feed = document.querySelector('#updates'); feed.replaceChildren();
+  for (const item of data.updates) {
+    const card = el('article');
+    card.append(el('small', `${pacific(item.timestamp)} · ${item.kind}${item.sha ? ' · ' + item.sha : ''}${item.ticket ? ' · #' + item.ticket + ' · ' + item.title + ' · ' + item.agent : ''}`), el('p', item.message)); feed.append(card);
+  }
+  if (!data.updates.length) feed.append(el('p', 'No updates in this window', 'muted'));
+}
+document.querySelector('#load-more').onclick = () => { updateHours += 48; refresh(); };
 async function refresh() {
   try {
-    const response = await fetch('/api/state');
+    const response = await fetch(`/api/state?hours=${updateHours}`);
     if (!response.ok) throw new Error('State unavailable');
     const data = await response.json();
     const board = document.querySelector('#board'); board.replaceChildren();
@@ -89,6 +134,7 @@ async function refresh() {
       history.append(row);
     }
     document.querySelector('#no-history').textContent = data.history.length ? '' : 'No completed agent runs';
+    renderNews(data);
     renderMetrics(data.metrics);
     renderActivity(data.activity);
     document.querySelector('#refresh').textContent = `Updated ${pacific(new Date())} · refreshes every 15 seconds`;

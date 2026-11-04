@@ -79,7 +79,7 @@ def test_pages_and_activity(endpoint):
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         try:
-            for view in ('board', 'activity', 'runs', 'metrics'):
+            for view in ('updates', 'alerts', 'board', 'activity', 'runs', 'metrics'):
                 page.goto(f'{url}/#{view}')
                 page.wait_for_function("document.querySelector('#refresh').textContent.startsWith('Updated')")
                 assert page.locator(f'[data-page="{view}"]').is_visible()
@@ -116,6 +116,55 @@ def test_pages_and_activity(endpoint):
             page.locator('#live').click()
             assert page.evaluate('windowHours') == 6
             assert 'Live' in page.locator('#activity-window').inner_text()
+            assert not errors, errors
+        finally:
+            browser.close()
+
+
+def test_updates_alerts_and_notifications(endpoint):
+    from test_dashboard import write_ticket
+
+    root, url = endpoint
+    with playwright.sync_playwright() as browser_tools:
+        browser = browser_tools.chromium.launch(args=['--no-sandbox'])
+        page = browser.new_page(timezone_id='Asia/Tokyo')
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.add_init_script('''
+            window.notices = [];
+            window.Notification = class {
+              static permission = 'granted';
+              static requestPermission() { return Promise.resolve('granted'); }
+              constructor(title, options) { window.notices.push(options); }
+            };
+        ''')
+        try:
+            page.goto(url)
+            page.wait_for_function("document.querySelector('#refresh').textContent.startsWith('Updated')")
+            assert page.locator('[data-page="updates"]').is_visible()
+            assert not page.locator('#alert-banner').is_visible()
+            page.evaluate('renderNews({alerts: [], updates: []})')
+            assert page.locator('#updates').inner_text() == 'No updates in this window'
+            page.locator('nav a[href="#alerts"]').click()
+            assert page.locator('#alerts').inner_text() == 'No alerts'
+            page.locator('#notifications').click()
+            assert page.evaluate("localStorage.getItem('alert-notifications')") == 'on'
+            write_ticket(root, '0001', 'blocked', logs='- 2026-11-04 10:00 codex: <img src=x>\n')
+            page.evaluate('refresh()')
+            page.wait_for_selector('#alerts article')
+            assert page.locator('#alert-banner').is_visible()
+            assert page.locator('#alerts img').count() == 0
+            assert page.evaluate('notices.length') == 1
+            page.evaluate('refresh()')
+            page.wait_for_timeout(200)
+            assert page.evaluate('notices.length') == 1
+            page.reload()
+            page.wait_for_selector('#alerts article')
+            assert page.locator('#notifications').inner_text() == 'Disable browser notifications'
+            assert page.evaluate('notices.length') == 0
+            page.locator('nav a[href="#updates"]').click()
+            page.locator('#load-more').click()
+            page.wait_for_function("document.querySelector('#updates-window').textContent.startsWith('Last 96 hours')")
             assert not errors, errors
         finally:
             browser.close()

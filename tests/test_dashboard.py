@@ -32,7 +32,7 @@ def test_empty_board(endpoint):
         state = json.load(response)
         assert response.headers["Content-Type"] == "application/json"
     assert state["counts"] == dict.fromkeys(dashboard.STATUSES, 0)
-    assert state["running"] == state["history"] == state["metrics"] == []
+    assert state["running"] == state["history"] == state["metrics"] == state["alerts"] == []
     with urlopen(url) as response:
         page = response.read().decode()
     assert 'id="board"' in page
@@ -256,3 +256,98 @@ def test_shared_dispatch_cap_boundary(monkeypatch):
     assert until == current + dt.timedelta(hours=1)
     assert dashboard.dispatch.agent_pause("codex", history, until) == ("idle", None)
     assert dashboard.dispatch.agent_pause("unknown", [], current) == ("idle", None)
+
+
+def write_ticket(board, tid, status, owner='codex', created='2026-11-04', logs=''):
+    (board / 'tickets').mkdir(exist_ok=True)
+    (board / 'tickets' / f'{tid}-test.md').write_text(
+        f'id: {tid}\ntitle: Ticket {tid}\nowner: {owner}\nstatus: {status}\n'
+        f'priority: 1\ndepends: \ncreated: {created}\n---\n'
+        '## Spec\nPRIVATE BODY\n- 2026-11-04 10:00 spec: PRIVATE FAKE LOG\n'
+        f'## Log\n{logs}')
+
+
+def test_alert_derivation(tmp_path):
+    import datetime as dt
+
+    current = dt.datetime.fromisoformat('2026-11-04T12:00:00+00:00')
+    write_ticket(tmp_path, '0001', 'blocked', logs='- 2026-11-04 10:00 codex: Need decision\n')
+    write_ticket(tmp_path, '0002', 'todo', 'user')
+    write_ticket(tmp_path, '0003', 'done', 'user')
+    write_ticket(tmp_path, '0004', 'todo')
+    runs = [
+        {'agent': 'codex', 'mode': 'work', 'ticket': '0001',
+         'start': '2026-11-04T08:00:00+00:00', 'end': '2026-11-04T08:30:00+00:00', 'exit': 1},
+        {'agent': 'pi', 'mode': 'work', 'ticket': '0001',
+         'start': '2026-11-04T09:00:00+00:00', 'end': '2026-11-04T11:00:00+00:00', 'exit': None},
+        {'agent': 'claude', 'mode': 'plan', 'ticket': '-',
+         'start': '2026-11-02T08:00:00+00:00', 'end': '2026-11-02T08:30:00+00:00', 'exit': 1},
+    ]
+    (tmp_path / 'runs.jsonl').write_text('\n'.join(json.dumps(r) for r in runs))
+    (tmp_path / 'alerts.jsonl').write_text(json.dumps({
+        'kind': 'push failure', 'timestamp': '2026-11-04T11:30:00+00:00', 'agent': 'codex',
+        'stderr': 'PRIVATE ERROR'}) + '\nnull\n{"partial":')
+    data = dashboard.state(tmp_path, tmp_path / 'runs', current, repo=tmp_path)
+    alerts = data['alerts']
+    assert [a['kind'] for a in alerts].count('failed run') == 2
+    assert [a['message'] for a in alerts if a['kind'] == 'failure cooldown'] == ['pi']
+    assert next(a for a in alerts if a['kind'] == 'blocked')['message'] == 'Need decision'
+    assert next(a for a in alerts if a['kind'] == 'user action')['ticket'] == '0002'
+    assert any(a['kind'] == 'stall' for a in alerts)
+    assert alerts[0]['kind'] == 'push failure'
+    assert 'PRIVATE' not in json.dumps(data)
+    (tmp_path / 'STOP').touch()
+    assert any(a['id'] == 'stop' for a in dashboard.state(
+        tmp_path, tmp_path / 'runs', current, repo=tmp_path)['alerts'])
+    # A recent run clears the stall, and active agents are not in failure cooldown.
+    (tmp_path / 'running').mkdir()
+    (tmp_path / 'running' / 'pi.json').write_text(json.dumps({
+        **runs[1], 'start': '2026-11-04T11:50:00+00:00', 'end': None}))
+    alerts = dashboard.state(tmp_path, tmp_path / 'runs', current, repo=tmp_path)['alerts']
+    assert not any(a['kind'] in ('stall', 'failure cooldown') for a in alerts)
+
+
+def test_stall_needs_ready_tickets_and_two_hours(tmp_path):
+    import datetime as dt
+
+    current = dt.datetime.fromisoformat('2026-11-04T12:00:00+00:00')
+    write_ticket(tmp_path, '0001', 'todo', created='2026-11-04T11:00:00+00:00')
+    assert not dashboard.state(tmp_path, tmp_path / 'runs', current, repo=tmp_path)['alerts']
+    current += dt.timedelta(hours=1)
+    assert dashboard.state(tmp_path, tmp_path / 'runs', current, repo=tmp_path)['alerts'][0]['kind'] == 'stall'
+    path = next((tmp_path / 'tickets').glob('*.md'))
+    path.write_text(path.read_text().replace('depends: \n', 'depends: 9999\n'))
+    assert not dashboard.state(tmp_path, tmp_path / 'runs', current, repo=tmp_path)['alerts']
+
+
+def test_updates_merge_order_and_window(tmp_path, monkeypatch):
+    import datetime as dt
+    import os
+    import subprocess
+
+    current = dt.datetime.fromisoformat('2026-11-04T12:00:00+00:00')
+    monkeypatch.setenv('TZ', 'UTC')
+    write_ticket(tmp_path, '0001', 'done', logs=(
+        '- 2026-11-04 10:00 codex: ' + 'long ' * 100 + '\n'
+        '- 2026-11-01 10:00 pi: Older entry\n'
+        '- malformed\n'))
+    subprocess.run(['git', 'init', '-q', '-b', 'master', str(tmp_path)], check=True)
+    subprocess.run(['git', '-C', str(tmp_path), '-c', 'user.name=Test',
+                    '-c', 'user.email=test@example.invalid', 'commit', '-q', '--allow-empty',
+                    '-m', 'Synthetic change'], check=True, env={**os.environ,
+                    'GIT_AUTHOR_DATE': '2026-11-04T11:00:00Z',
+                    'GIT_COMMITTER_DATE': '2026-11-04T11:00:00Z'})
+    (tmp_path / 'reports').mkdir()
+    report = tmp_path / 'reports' / '2026-11-04-test.md'
+    report.write_text('PRIVATE REPORT CONTENT')
+    time = dt.datetime.fromisoformat('2026-11-04T09:00:00+00:00').timestamp()
+    os.utime(report, (time, time))
+    (tmp_path / 'reports' / 'symlink.md').symlink_to(report)
+    logs = dashboard.ticket_logs(dashboard.dispatch.tickets(tmp_path / 'tickets')[0])
+    feed = dashboard.updates(logs, tmp_path, current, 48)
+    assert [e['kind'] for e in feed] == ['commit', 'ticket', 'report']
+    assert feed[0]['message'] == 'Synthetic change' and len(feed[0]['sha']) >= 7
+    assert len(feed[1]['message']) == 240
+    assert 'PRIVATE' not in json.dumps(feed)
+    assert len(dashboard.updates(logs, tmp_path, current, 96)) == 4
+    assert dashboard.updates([], tmp_path / 'missing', current, 48) == []

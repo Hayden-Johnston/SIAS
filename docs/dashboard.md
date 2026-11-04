@@ -91,3 +91,32 @@ The dispatcher and dashboard share pause calculations, including minimum gaps, f
 and rolling run caps. Running records take precedence. State reflects dispatcher records, not a
 process probe, and can lag until dispatch reaps a finished process. No server lanes are built yet;
 those can be added alongside the agent chart later. Dense start tags can overlap at wide zoom levels.
+
+## Updates and alerts
+
+`#updates` is the default page. It merges ticket `## Log` lines, local `master` commit subjects
+and short SHAs, and report filenames, newest first. The window starts at 48 hours; Load more adds
+48 hours and preserves that window on refresh. `/api/state?hours=96` requests the same expanded
+window. Messages are flattened and limited to 240 characters. Report contents and ticket specs
+are never returned. Report timestamps use file modification time (local arrival/change, which can
+change on checkout); commits use committer time. Ticket logs have no timezone in their source, so
+are interpreted in the server's local timezone, matching the dispatcher that writes them, then
+shown in Pacific time.
+
+Every page has a banner with the alert count and the three newest items, linking to `#alerts`.
+Alerts include blocked tickets, unfinished user tickets, failed or unknown-exit runs completed
+within 24 hours, failure cooldowns, STOP, and no run starts for two hours with ready agent tickets.
+A ready ticket must have all dependencies done; user actions alone do not trigger a stall. With no
+run history, ticket creation supplies the stall clock. Ticket alert times use the latest log or
+creation date: the board does not record status transition times. Cooldowns clear when an agent is
+running or its latest failure cooldown expires.
+
+The dispatcher's only new write is a metadata-only line in `board/alerts.jsonl` when all worker push
+attempts fail. Those alerts remain visible until the operator removes the corresponding lines;
+no automatic resolution is inferred from later pushes. Failed push stderr is never stored here.
+
+The Alerts page offers opt-in browser notifications, remembered in localStorage. After the first
+successful refresh, newly appearing alert IDs notify once while the tab is open; existing alerts on
+page load do not notify. Permission must be granted by the browser (usually requiring localhost or
+HTTPS). Notifications may be unavailable on browsers that require a service worker. No background
+notification service is installed.

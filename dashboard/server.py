@@ -4,9 +4,12 @@ import argparse
 import datetime as dt
 import json
 import math
+import re
+import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ops import dispatch
@@ -116,11 +119,120 @@ def activity(history, running, titles, current):
             "runs": [{**r, "title": titles.get(r["ticket"], "")} for r in intervals]}
 
 
-def state(board, runs=RUNS, current=None):
+def timestamp(value):
+    """Normalize timestamps; dispatcher ticket logs use the server's local timezone."""
+    return dt.datetime.fromisoformat(value).astimezone(dt.timezone.utc).isoformat()  # noqa: UP017
+
+
+def one_line(value):
+    return " ".join(value.split())[:240]
+
+
+def ticket_logs(ticket):
+    body = ticket["path"].read_text().partition("\n## Log\n")[2]
+    result = []
+    for line in body.splitlines():
+        match = re.fullmatch(r"- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) ([^:]+): (.*)", line)
+        if match:
+            time, agent, message = match.groups()
+            try:
+                result.append({"timestamp": timestamp(time), "kind": "ticket",
+                               "ticket": ticket["id"], "title": ticket.get("title", ""),
+                               "agent": agent, "message": one_line(message)})
+            except ValueError:
+                continue
+    return result
+
+
+def updates(logs, repo, current, hours):
+    since = current - dt.timedelta(hours=hours)
+    entries = list(logs)
+    try:
+        commits = subprocess.run(
+            ["git", "-C", str(repo), "log", "master", f"--since={since.isoformat()}",
+             "--format=%cI%x09%h%x09%s"], capture_output=True, text=True, timeout=5, check=False)
+        for line in commits.stdout.splitlines():
+            time, sha, subject = line.split("\t", 2)
+            entries.append({"timestamp": timestamp(time), "kind": "commit", "sha": sha,
+                            "message": one_line(subject)})
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    for path in (repo / "reports").glob("*.md"):
+        if path.is_symlink():
+            continue
+        try:
+            # No report contents are read. mtime is the local file arrival/change time.
+            time = dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc)  # noqa: UP017
+            entries.append({"timestamp": time.isoformat(), "kind": "report",
+                            "message": path.name})
+        except OSError:
+            continue
+    return sorted((e for e in entries if since <= dt.datetime.fromisoformat(e["timestamp"]) <= current),
+                  key=lambda e: (e["timestamp"], e["kind"], e["message"]), reverse=True)
+
+
+def alerts(board, ts, logs, history, running, current):
+    result = []
+
+    def add(key, kind, time, message, **fields):
+        result.append({"id": key, "kind": kind, "timestamp": timestamp(time),
+                       "message": one_line(message), **fields})
+
+    for ticket in ts:
+        blocked = ticket.get("status") == "blocked"
+        if not blocked and not (ticket.get("owner") == "user" and ticket.get("status") != "done"):
+            continue
+        last = next((line for line in reversed(logs) if line["ticket"] == ticket["id"]), None)
+        add("ticket:" + ticket["id"], "blocked" if blocked else "user action",
+            last["timestamp"] if last else ticket.get("created", current.isoformat()),
+            last["message"] if last else "No log entries",
+            **{key: ticket.get(key, "") for key in ("title", "owner")},
+            ticket=ticket["id"])
+    for run in history:
+        end = dt.datetime.fromisoformat(run["end"])
+        if run["exit"] != 0 and current - dt.timedelta(hours=24) <= end <= current:
+            add(f"run:{run['agent']}:{run['start']}", "failed run", run["end"],
+                f"{run['agent']} · ticket {run['ticket']} · exit {run['exit']}")
+    for agent in sorted({r["agent"] for r in history}):
+        last = max((r for r in history if r["agent"] == agent), key=lambda r: r["end"])
+        until = dt.datetime.fromisoformat(last["end"]) + dispatch.FAIL_COOLDOWN
+        if last["exit"] != 0 and current < until and not any(r["agent"] == agent for r in running):
+            add(f"cooldown:{agent}:{last['end']}", "failure cooldown", last["end"], agent,
+                until=until.isoformat())
+    stop = board / "STOP"
+    if stop.exists():
+        add("stop", "dispatch paused", dt.datetime.fromtimestamp(stop.stat().st_mtime).isoformat(),
+            "STOP is present")
+    by_id = {t["id"]: t for t in ts}
+    starts = [dt.datetime.fromisoformat(r["start"]) for r in history + running]
+    last_start = max(starts, default=None)
+    if any(dispatch.ready(t, by_id) and t.get("owner") != "user" for t in ts):
+        # With no run history, ready-ticket creation is the earliest available evidence.
+        since = last_start or min((dt.datetime.fromisoformat(t.get("created", current.isoformat()))
+                                  .astimezone(current.tzinfo) for t in ts
+                                  if dispatch.ready(t, by_id)), default=current)
+        if current - since >= dt.timedelta(hours=2):
+            add("stall", "stall", since.isoformat(), "No agent run started for 2 h while ready tickets exist")
+    path = board / "alerts.jsonl"
+    if path.exists():
+        for index, line in enumerate(path.read_text().splitlines()):
+            try:
+                record = json.loads(line)
+                if record["kind"] == "push failure":
+                    add(f"push:{index}", "push failure", record["timestamp"],
+                        f"{record['agent']} branch push failed after retries")
+            except (ValueError, TypeError, KeyError):
+                continue
+    return sorted(result, key=lambda a: (a["timestamp"], a["id"]), reverse=True)
+
+
+def state(board, runs=RUNS, current=None, repo=PAGE.parent.parent, hours=48):
     current = current or dispatch.now()
     titles = {}
     columns = {status: [] for status in STATUSES}
-    for ticket in dispatch.tickets(board / "tickets"):
+    ts = dispatch.tickets(board / "tickets")
+    logs = [line for ticket in ts for line in ticket_logs(ticket)]
+    for ticket in ts:
         titles[ticket.get("id")] = ticket.get("title", "")
         if ticket.get("status") in columns:
             columns[ticket["status"]].append(
@@ -144,14 +256,22 @@ def state(board, runs=RUNS, current=None):
                 continue
     return {"columns": columns, "counts": {k: len(v) for k, v in columns.items()},
             "running": running, "history": history[::-1], "metrics": run_metrics(runs),
-            "activity": activity(history, running, titles, current)}
+            "activity": activity(history, running, titles, current),
+            "alerts": alerts(board, ts, logs, history, running, current),
+            "updates": updates(logs, repo, current, hours)}
 
 
 def handler(board, runs=RUNS):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path == "/api/state":
-                body = json.dumps(state(board, runs), allow_nan=False).encode()
+            url = urlsplit(self.path)
+            if url.path == "/api/state":
+                try:
+                    hours = max(48, int(parse_qs(url.query).get("hours", [48])[0]))
+                except ValueError:
+                    self.send_error(400)
+                    return
+                body = json.dumps(state(board, runs, hours=hours), allow_nan=False).encode()
                 content_type = "application/json"
             elif self.path in ("/", "/index.html"):
                 body = PAGE.read_bytes()

@@ -125,3 +125,31 @@ def test_pipeline_reap_is_counted_before_scheduling(tmp_path, monkeypatch):
     monkeypatch.setattr(dispatch, 'reap', reap)
     dispatch.tick()
     assert not launched
+
+
+@pytest.mark.parametrize('success_at', [1, 3, None])
+def test_push_exhaustion_alert(tmp_path, monkeypatch, success_at):
+    for name in ('BOARD', 'RUNNING', 'LOGS'):
+        monkeypatch.setattr(dispatch, name, tmp_path)
+    monkeypatch.setattr(dispatch, 'RUNS', tmp_path / 'runs.jsonl')
+    monkeypatch.setattr(dispatch, 'alive', lambda pid: False)
+    (tmp_path / 'codex.json').write_text(json.dumps({
+        'agent': 'codex', 'mode': 'work', 'ticket': '-', 'pid': 1,
+        'name': 'synthetic', 'start': dispatch.now().isoformat()}))
+    calls = []
+
+    def push(*args, **kwargs):
+        from types import SimpleNamespace
+
+        calls.append(args)
+        return SimpleNamespace(returncode=0 if len(calls) == success_at else 1)
+
+    monkeypatch.setattr(dispatch.subprocess, 'run', push)
+    assert not dispatch.reap('codex')
+    assert len(calls) == (success_at or dispatch.PUSH_TRIES)
+    if success_at:
+        assert not (tmp_path / 'alerts.jsonl').exists()
+    else:
+        record = json.loads((tmp_path / 'alerts.jsonl').read_text())
+        assert record['kind'] == 'push failure' and record['agent'] == 'codex'
+        assert set(record) == {'kind', 'agent', 'timestamp'}

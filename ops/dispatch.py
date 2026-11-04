@@ -205,6 +205,10 @@ def reap(agent):
         for _ in range(PUSH_TRIES):  # GitHub SSH intermittently rejects the key; later runs retry too
             if subprocess.run(push, env=ENV, check=False, capture_output=True).returncode == 0:
                 break
+        else:
+            with (BOARD / "alerts.jsonl").open("a") as f:
+                f.write(json.dumps({"kind": "push failure", "timestamp": now().isoformat(),
+                                    "agent": agent}) + "\n")
     return False
 
 
