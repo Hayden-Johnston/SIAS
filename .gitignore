@@ -41,3 +41,6 @@ candidates/
 
 # Evaluator approvals and their local model queue
 evaluated/
+
+# Local CPU evaluator launch configuration
+evaluator.local.json

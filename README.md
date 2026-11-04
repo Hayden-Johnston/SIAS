@@ -106,6 +106,35 @@ set the local status URLs to enable five-minute server uptime sampling in dispat
 The dashboard Activity page shows server up/down lanes alongside agent activity; no inference
 or server lifecycle operations are performed. See [docs/dashboard.md](docs/dashboard.md).
 
+### CPU evaluator lifecycle
+
+The proxy/operator can manage one CPU llama.cpp evaluator with `ops/servers.py`.
+Copy `evaluator.example.json` to gitignored `evaluator.local.json` and set the CPU
+binary, non-GLM model, loopback host, port and storage directory. Relative paths resolve
+from the config file. Linux with `/proc` and pidfd support is required.
+
+```sh
+python3 ops/servers.py up evaluator
+python3 ops/servers.py status evaluator
+python3 ops/servers.py down evaluator
+# Each command also accepts --config /path/to/evaluator.local.json
+```
+
+Only the `evaluator` set is supported. GPU allocations are rejected (including protected
+GPUs 2-6 and reserved GPUs 0-1), and port 8099 is always refused. The command fixes
+`--device none` and zero GPU layers, hides GPU devices, and removes inherited
+`LLAMA_ARG_*` overrides. It uses a 16,384-token context, four threads and one request
+slot, matching the candidate evaluator. Use a trusted CPU llama-server binary.
+Agents must leave lifecycle commands to the proxy/operator.
+
+Repeated `up` reuses the recorded process. `down` sends SIGTERM only through a PID handle
+after checking the recorded process start time and command; it never stops existing servers
+by port, name or process group. PID records, a lock and append-only output log live under
+`storage_dir`. A ten-second shutdown timeout retains the PID record for operator review.
+`status` reports process existence, not HTTP health or model readiness; `up` only checks for
+immediate launch failure. This standalone script does not change the candidate evaluator's
+existing temporary child-server workflow or manage Maya.
+
 ### Queued model calls
 
 `llm_proxy.Client` reads `MAYA_URL` (OpenAI API base URL ending in `/v1`) and

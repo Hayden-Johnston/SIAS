@@ -1,0 +1,10 @@
+{
+  "storage_dir": "/path/to/storage/servers",
+  "evaluator": {
+    "binary": "/path/to/cpu/llama-server",
+    "model": "/path/to/non-glm-evaluator.gguf",
+    "host": "127.0.0.1",
+    "port": 8086,
+    "gpus": []
+  }
+}
