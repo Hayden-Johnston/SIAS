@@ -2,8 +2,8 @@
 
 Tickets are files in board/tickets/NNNN-slug.md: `key: value` header lines, a `---` line, then the
 body. Cron runs `dispatch.py tick` every few minutes; a tick starts the owner of each ready ticket
-(one run per agent at a time), sends finished Codex work to Claude for review, and starts a Claude
-planning run when Codex is running out of work. Touch board/STOP to pause all dispatching.
+(one run per agent at a time), sends finished worker output (Codex, pi) to Claude for review, and starts
+a Claude planning run when a worker is running out of work. Touch board/STOP to pause all dispatching.
 
 Usage: dispatch.py tick | list | new OWNER PRIORITY TITLE [DEPENDS...] | set ID KEY VALUE | log ID AGENT MSG
 """
@@ -25,23 +25,36 @@ LOGS = BOARD / "logs"
 RUNS = BOARD / "runs.jsonl"
 PROMPTS = REPO / "ops" / "prompts"
 WT = REPO.parent / "llm_security-wt"
-CODEX_CLONE = WT / "codex"  # separate clone: Codex's sandbox can't write a .git inside its workspace
-CODEX_GITDIR = WT / "codex-gitdir"
+# Workers implement tickets in their own clones, whose git dirs live outside the checkout because
+# Codex's sandbox makes any .git inside its workspace read-only. Each worker works on a branch named
+# after itself. pi (local Qwen model on the second host) runs in a Docker sandbox (ops/pi/Dockerfile).
+WORKERS = ("codex", "pi")
+PI_AGENT_DIR = WT / "pi-agent"  # pi config (models.json) and uv caches for the container
 DATA = Path("/mnt/storage/llm_security")  # raw data, caches and runs (docs/infrastructure.md)
 
-OWNERS = {"claude", "codex", "user"}
+OWNERS = {"claude", *WORKERS, "user"}
 STATUSES = {"todo", "doing", "review", "done", "blocked"}
 RUN_TIMEOUT = "3h"  # longer runs are assumed stuck
 # Budget: both agents are on $20 plans, so runs are few, spaced out, and use cheaper settings.
 # Plan usage resets on rolling 5-hour windows; cap runs per window so a burst can't exhaust one.
 # Interactive Claude sessions share Claude's window, so Claude gets fewer dispatched runs.
 WINDOW = dt.timedelta(hours=5)
-MAX_RUNS_PER_WINDOW = {"claude": 3, "codex": 5}
-MIN_GAP = dt.timedelta(minutes=30)  # rest between an agent's runs
+# pi runs on a local model and costs no plan tokens; its cap only guards against runaway loops.
+MAX_RUNS_PER_WINDOW = {"claude": 3, "codex": 5, "pi": 20}
+MIN_GAP = {"claude": dt.timedelta(minutes=30), "codex": dt.timedelta(minutes=30), "pi": dt.timedelta(0)}
 FAIL_COOLDOWN = dt.timedelta(hours=2)  # after a failed run (often a usage limit), wait before retrying
 PLAN_INTERVAL = dt.timedelta(hours=3)  # at most one planning run per 3 hours
-MIN_CODEX_QUEUE = 2  # plan more work when Codex has fewer ready tickets than this
+MIN_QUEUE = 2  # plan more work when a worker has fewer ready tickets than this
 ENV = {**os.environ, "PATH": f"{Path.home()}/.local/bin:/usr/local/bin:/usr/bin:/bin"}
+
+
+def dotenv(key):
+    """One value from the repo's .env (cron does not load it)."""
+    for line in (REPO / ".env").read_text().splitlines():
+        name, _, value = line.partition("=")
+        if name.strip() == key:
+            return value.strip()
+    return ""
 
 
 def now():
@@ -121,13 +134,24 @@ def launch(agent, mode, ticket):
     start = now()
     tid = ticket["id"] if ticket else "-"
     name = f"{start:%Y%m%d-%H%M%S}-{agent}-{mode}-{tid}"
-    prompt = (PROMPTS / f"{agent}-{mode}.md").read_text()
-    prompt = prompt.replace("$TICKET", str(ticket["path"]) if ticket else "").replace("$REPO", str(REPO))
-    prompt = prompt.replace("$WT", str(WT))
+    prompt = (PROMPTS / ("worker-work.md" if agent in WORKERS else f"{agent}-{mode}.md")).read_text()
+    subs = {"$TICKET": str(ticket["path"]) if ticket else "", "$REPO": str(REPO), "$WT": str(WT), "$AGENT": agent,
+            "$OWNER": ticket["owner"] if ticket else ""}
+    for key, value in subs.items():
+        prompt = prompt.replace(key, value)
+    clone, gitdir = WT / agent, WT / f"{agent}-gitdir"
     if agent == "codex":
         cmd = ["codex", "exec", "-c", 'model_reasoning_effort="medium"', "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true",
-               "--add-dir", str(CODEX_GITDIR), "--add-dir", str(BOARD), "--add-dir", str(DATA), "--add-dir", str(Path.home() / ".cache" / "uv"),
-               "-C", str(CODEX_CLONE), prompt]
+               "--add-dir", str(gitdir), "--add-dir", str(BOARD), "--add-dir", str(DATA), "--add-dir", str(Path.home() / ".cache" / "uv"),
+               "-C", str(clone), prompt]
+    elif agent == "pi":  # mounts are the whole world it sees: no Docker socket, no Maya key
+        mounts = [f"{REPO}:{REPO}:ro", f"{BOARD}:{BOARD}", f"{DATA}:{DATA}", f"{clone}:{clone}", f"{gitdir}:{gitdir}",
+                  f"{PI_AGENT_DIR}:{PI_AGENT_DIR}"]
+        cmd = ["docker", "run", "--rm", "--name", f"sias-pi-{tid}", "--user", f"{os.getuid()}:{os.getgid()}",
+               "-e", "HOME=/tmp", "-e", f"PI_CODING_AGENT_DIR={PI_AGENT_DIR}", "-e", f"UV_CACHE_DIR={PI_AGENT_DIR}/uv-cache",
+               "-e", f"UV_PYTHON_INSTALL_DIR={PI_AGENT_DIR}/uv-python", "-e", f"LLAMA_API_KEY={dotenv('LLAMA_API_KEY')}",
+               *[a for m in mounts for a in ("-v", m)], "-w", str(clone), "sias-pi:1",
+               "pi", "-p", "--no-session", "--model", "rig/swift-1.5-27b", "--thinking", "low", prompt]
     else:
         cmd = ["claude", "-p", prompt, "--model", "sonnet", "--effort", "medium", "--permission-mode", "auto", "--add-dir", str(WT)]  # --add-dir is variadic
     exit_file = LOGS / f"{name}.exit"
@@ -170,8 +194,8 @@ def reap(agent):
             set_field(tid, "status", "blocked")
             log(tid, "dispatch", f"{state['mode']} run ended (exit {code}) without a status change; "
                                  f"see board/logs/{state['name']}.log")
-    if agent == "codex":  # publish Codex's branch; the sandbox has no SSH key
-        subprocess.run(["git", "-C", str(CODEX_CLONE), "push", "-q", "--force-with-lease", "github", "codex"],
+    if agent in WORKERS:  # publish the worker's branch; sandboxes have no SSH key
+        subprocess.run(["git", "-C", str(WT / agent), "push", "-q", "--force-with-lease", "github", agent],
                        env=ENV, check=False)  # a failed push retries after the next run
     return False
 
@@ -181,7 +205,7 @@ def resting(agent):
     if not done:
         return False
     last = max(done, key=lambda r: r["end"])
-    wait = MIN_GAP if last["exit"] == 0 else FAIL_COOLDOWN
+    wait = MIN_GAP[agent] if last["exit"] == 0 else FAIL_COOLDOWN
     return now() - dt.datetime.fromisoformat(last["end"]) < wait
 
 
@@ -193,10 +217,11 @@ def tick():
     capped = {a for a, cap in MAX_RUNS_PER_WINDOW.items() if sum(r["agent"] == a for r in recent) >= cap}
     capped |= {a for a in MAX_RUNS_PER_WINDOW if resting(a)}
 
-    if not reap("codex") and "codex" not in capped:
-        t = pick(ts, "codex")
-        if t:
-            launch("codex", "work", t)
+    for worker in WORKERS:
+        if not reap(worker) and worker not in capped:
+            t = pick(ts, worker)
+            if t:
+                launch(worker, "work", t)
 
     if not reap("claude") and "claude" not in capped:
         ts = tickets()
@@ -207,10 +232,10 @@ def tick():
         if t:
             return launch("claude", "work", t)
         by_id = {t["id"]: t for t in ts}
-        codex_ready = sum(t["owner"] == "codex" and ready(t, by_id) for t in ts)
+        starved = any(sum(t["owner"] == w and ready(t, by_id) for t in ts) < MIN_QUEUE for w in WORKERS)
         stuck = any(t["status"] == "blocked" and t["owner"] != "user" for t in ts)
         plans = [dt.datetime.fromisoformat(r["start"]) for r in runs() if r["mode"] == "plan"]
-        if (codex_ready < MIN_CODEX_QUEUE or stuck) and (not plans or now() - max(plans) > PLAN_INTERVAL):
+        if (starved or stuck) and (not plans or now() - max(plans) > PLAN_INTERVAL):
             launch("claude", "plan", None)
 
 

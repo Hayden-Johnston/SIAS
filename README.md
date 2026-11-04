@@ -122,7 +122,8 @@ Development runs largely unattended, with a human owner setting direction.
 
 - **Claude Code** is the architect and integrator. It writes tickets, reviews and verifies every
   change, and is the only agent that merges to `master`.
-- **Codex** implements tickets on its own branch, in its own clone.
+- **Codex** and **pi** implement tickets, each on its own branch in its own clone. pi runs a local
+  27B model in a Docker sandbox, so mechanical work costs no subscription tokens.
 - **Local models** do the bulk work: generating attacks, labeling and evaluating data, and
   classifying prompts. They also act as targets.
 - A **kanban board** of ticket files and a cron-driven dispatcher

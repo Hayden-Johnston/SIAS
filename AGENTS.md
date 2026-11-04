@@ -22,7 +22,8 @@ Claude Code and Codex both read this file. `CLAUDE.md` contains one line: `@AGEN
 
 - **Claude Code** is the architect and integrator: owns the design, writes tickets, reviews and verifies
   all work, and is the only agent that merges to `master`.
-- **Codex** implements tickets on its `codex` branch. Questions go in the ticket log (status blocked).
+- **Codex** and **pi** (a local Qwen-family model in a Docker sandbox, `ops/pi/`) implement tickets on
+  branches named after themselves. Questions go in the ticket log (status blocked).
 - **Local models** generate attacks, act as targets, and act as classifiers.
 - **Evaluator** (independent workflow, local model, different family from the generators) approves
   payloads into datasets and owns dataset hygiene.
@@ -46,7 +47,7 @@ not retry, and report it.
   `touch board/STOP` pauses it. Run logs: `board/logs/`, `board/runs.jsonl`.
 - `reports/`: one dated markdown file per change set covering software, infrastructure, model and
   pipeline changes: what changed, why, measured effect (detection, false positives, latency, storage).
-- Git: Codex works in its own clone (`../llm_security-wt/codex`, branch `codex`); `master` lives in this
+- Git: each worker has its own clone (`../llm_security-wt/<worker>`, branch `<worker>`); `master` lives in this
   checkout. Small commits; `uv run pytest -q` and `uv run ruff check` pass before merge. Claude merges.
 - Ask the owner before anything not covered in these docs.
 
