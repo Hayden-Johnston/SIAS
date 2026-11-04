@@ -29,3 +29,6 @@ dev = [
     "ruff>=0.17.0",
     "ty>=0.0.86",
 ]
+
+[tool.uv.build-backend]
+module-name = ["llm_security", "data_processing", "llm_proxy"]

@@ -7,3 +7,10 @@ The first phase of this project is testing different combinations of rules and c
 
 # AI policy
 All generated code is function or line sized and reviewed at time of generation.  Most code is hand written with selections from Claude code and Codex.
+
+# Local prototype configuration
+Copy `config.example.json` to `config.local.json` and replace the placeholder endpoint, model,
+and dataset with your local settings. `config.local.json` is ignored by git and stores the run
+counter. Provider entries map an endpoint to `[model, API_KEY_ENV_VAR]`; put the corresponding
+key value in `.env`, which is also ignored. Run the prototype from the repository root with
+`uv run llm-security`.

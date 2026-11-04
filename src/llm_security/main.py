@@ -9,7 +9,7 @@ from llm_security.pipeline import Pipeline
 
 def main():
     load_dotenv()
-    config_path = Path("config.json")
+    config_path = Path("config.local.json")
     with config_path.open("r", encoding="utf-8") as f:
         config = json.load(f)
         f.close()
