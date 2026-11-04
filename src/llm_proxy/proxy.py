@@ -23,12 +23,16 @@ class ProxyError(RuntimeError):
 
 
 class Client:
-    def __init__(self, path, *, env_file=".env", timeout=300, attempts=3, backoff=1):
+    """Explicit base_url/api_key select another server without inheriting Maya credentials."""
+
+    def __init__(self, path, *, env_file=".env", timeout=300, attempts=3, backoff=1,
+                 base_url=None, api_key=None):
         if attempts < 1 or backoff < 0 or timeout <= 0:
             raise ValueError("Invalid retry or timeout settings")
         settings = dotenv_values(env_file) | os.environ
-        self.url = settings.get("MAYA_URL", "http://127.0.0.1:8099/v1").rstrip("/")
-        self.key = settings.get("MAYA_API_KEY")
+        self.url = (base_url if base_url is not None else
+                    settings.get("MAYA_URL", "http://127.0.0.1:8099/v1")).rstrip("/")
+        self.key = api_key if base_url is not None else settings.get("MAYA_API_KEY")
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.timeout, self.attempts, self.backoff = timeout, attempts, backoff
