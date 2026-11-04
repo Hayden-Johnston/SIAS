@@ -12,9 +12,14 @@ wheels/
 
 # Secrets
 .env
+.env.*
 
 # Data
 data/
+raw/
+corpora/
+activations/
+*.safetensors
 results
 # Agent board (local operational state)
 board/
