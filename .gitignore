@@ -38,3 +38,6 @@ servers.local.json
 
 # Generated unapproved candidates and their model queue
 candidates/
+
+# Evaluator approvals and their local model queue
+evaluated/

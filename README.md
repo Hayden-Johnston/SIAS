@@ -198,6 +198,35 @@ insertion spans. Multi-turn candidates use a fixed benign exchange followed by t
 turn. Labels and techniques are generation requests, pending independent evaluator validation;
 all candidates have `publishable: no` and `evaluator_approved: false`.
 
+### Candidate evaluation
+
+Evaluate a completed candidate file using the inventory's non-GLM Qwen3.5 2B Q4 checkpoint:
+
+```sh
+uv run python -m data_processing.evaluate candidates.jsonl --manifest candidate-manifest.json \
+  --binary /path/to/cpu/llama-server
+```
+
+Use a current CPU llama.cpp build with Qwen3.5 support. The evaluator starts its own loopback
+server only for pending requests, with GPU layers disabled and `--device none`, a 16,384-token
+context, four CPU threads and one request at a time. Requests disable thinking in the chat template.
+It stops that child after draining, including on errors. It never manages existing servers. Inputs exceeding the context fail without approval;
+there is no truncation. The selected 1.22 GB checkpoint leaves room within the roughly 10 GB RAM
+budget. `--inventory` selects a local inventory file.
+
+Outputs live under the storage root's `evaluated/<run-id>/` (`--output-dir` overrides the root).
+Only exact agreement on attack label, channel and technique set admits a row to `approved.jsonl`,
+with `label_source: evaluator`. IDs, spans and publication declarations are preserved; evaluation
+does not authorize publication. The completion manifest includes the approved dataset checksum,
+approval rate and separate disagreement counts (a rejected row may disagree on multiple fields).
+This is model agreement, not measured labeling accuracy or span validation.
+
+The dedicated local queue caches every response. Replay uses pinned input, evaluator code, weights
+and server binary hashes, and starts no server when all responses are cached. Interrupted runs
+resume pending calls; failures/refusals stop for operator review. Malformed labels cannot produce
+a completion manifest. Commands print aggregate manifests only; queue files contain text and must
+stay outside git. Use one evaluator writer per output root.
+
 ## Repository layout
 
 | Path | Contents |
