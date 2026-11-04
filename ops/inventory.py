@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only local rig snapshot. Run: python3 ops/inventory.py.
+"""Read-only local rig snapshot. Run: uv run python ops/inventory.py (needs Python 3.11+).
 
 Only metadata is read; no model loading or server lifecycle commands are used.
 Listening means a TCP socket exists, not that a model is healthy. INI entries
