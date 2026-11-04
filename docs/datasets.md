@@ -33,6 +33,7 @@ The normalizer keeps an ID set in memory to reject collisions; memory use grows 
 
 This command normalizes the data schema. It does not perform detection-stage Unicode or encoding
 transformations, classify prompts, approve labels, deduplicate near matches, or assign splits.
+
 ## Attack taxonomy and schema version 2
 
 Version 1 records one free-text `attack_family`. That cannot answer "which delivery channels and
