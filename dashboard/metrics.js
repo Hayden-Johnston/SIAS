@@ -1,3 +1,5 @@
+// UTC stays in the API; every displayed timestamp uses Pacific, including DST labels.
+const pacific = value => new Intl.DateTimeFormat('en-US', {timeZone: 'America/Los_Angeles', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'short'}).format(new Date(value));
 // Manifest aggregates only; all labels use textContent, never HTML interpolation.
 const metricColors = {tp: '#0072b2', fp: '#e69f00', fn: '#d55e00', tn: '#009e73'};
 const percent = value => value == null ? '—' : `${(value * 100).toFixed(5)}%`;
@@ -39,17 +41,17 @@ function rateChart(container, runs, key, title, color, target) {
   svg.append(svgNode('text', {x: 570, y: y(target) + 10}, percent(target)));
   points.forEach((run, index) => {
     const circle = svgNode('circle', {cx: x(run), cy: y(run.metrics[key].value), r: 4, fill: color});
-    circle.append(svgNode('title', {}, `${run.run_id} · ${run.timestamp} · ${rateLabel(run.metrics[key])}`));
+    circle.append(svgNode('title', {}, `${run.run_id} · ${pacific(run.timestamp)} · ${rateLabel(run.metrics[key])}`));
     svg.append(circle);
     const label = svgNode('text', {x: x(run), y: 286 + (index % 3) * 22, 'text-anchor': 'middle'}, `i${run.iteration} · ${run.pipeline_version}`);
-    label.append(svgNode('title', {}, `${run.timestamp} · ${run.run_id}`));
+    label.append(svgNode('title', {}, `${pacific(run.timestamp)} · ${run.run_id}`));
     svg.append(label);
     svg.append(svgNode('line', {x1: x(run), x2: x(run), y1: 267, y2: 274, stroke: 'var(--ink)'}));
     // A lone run has a zero-width band, so also draw each interval explicitly.
     svg.append(svgNode('line', {x1: x(run), x2: x(run), y1: y(run.metrics[key].ci95[0]), y2: y(run.metrics[key].ci95[1]), stroke: color, 'stroke-width': 2}));
   });
-  svg.append(svgNode('text', {x: 100, y: 352}, new Date(first).toISOString()));
-  if (last !== first) svg.append(svgNode('text', {x: 560, y: 352, 'text-anchor': 'end'}, new Date(last).toISOString()));
+  svg.append(svgNode('text', {x: 100, y: 352}, pacific(first)));
+  if (last !== first) svg.append(svgNode('text', {x: 560, y: 352, 'text-anchor': 'end'}, pacific(last)));
   container.append(svg);
 }
 
@@ -93,12 +95,12 @@ function renderMetrics(runs) {
   const history = document.querySelector('#metrics-history'); history.replaceChildren();
   runs.forEach((run, index) => {
     // Index values keep duplicate run ids selectable without putting them in URLs.
-    const option = el('option', `${run.run_id} · ${run.timestamp}`); option.value = String(index); select.append(option);
+    const option = el('option', `${run.run_id} · ${pacific(run.timestamp)}`); option.value = String(index); select.append(option);
     if (option.textContent === previous) option.selected = true;
     const row = el('tr'), cell = el('td'), link = el('a', run.run_id); link.href = '#run-report';
     link.onclick = () => { select.value = String(index); showRun(run); };
     cell.append(link); row.append(cell);
-    for (const value of [run.timestamp.replace('T', ' ').replace('+00:00', ''), run.iteration, run.pipeline_version, `${run.dataset_sha256.slice(0, 12)}… / ${run.evaluation_split}`, run.records]) row.append(el('td', value));
+    for (const value of [pacific(run.timestamp), run.iteration, run.pipeline_version, `${run.dataset_sha256.slice(0, 12)}… / ${run.evaluation_split}`, run.records]) row.append(el('td', value));
     row.children[4].title = run.dataset_sha256;
     for (const key of ['detection', 'false_positive']) {
       const rate = run.metrics[key], cell = el('td', undefined, 'metric-rate');

@@ -37,7 +37,7 @@ def test_empty_board(endpoint):
         page = response.read().decode()
     assert 'id="board"' in page
     assert 'id="history"' in page
-    assert "setInterval(refresh, 30000)" in page
+    assert "setInterval(refresh, 15000)" in page
 
 
 def test_all_statuses_running_and_history(endpoint):
@@ -67,6 +67,7 @@ def test_all_statuses_running_and_history(endpoint):
     assert state["running"][0]["ticket"] == "0001"
     assert state["history"][0]["duration"] == 90
     assert state["history"][0]["exit"] == 0
+    assert state["activity"]["runs"][0]["title"] == "Ticket doing"
     assert "PRIVATE" not in raw and "private" not in raw and '"pid"' not in raw
     assert set(state["columns"]["todo"][0]) == {"id", "title", "owner", "priority"}
     with pytest.raises(HTTPError) as error:
@@ -201,3 +202,57 @@ def test_perfect_detection_and_no_false_positives_are_not_skipped(tmp_path):
                          'false_positive': rate(0, 15000)}
     write_manifest(tmp_path, record=record)
     assert dashboard.run_metrics(tmp_path)[0]['metrics'] == record['metrics']
+
+
+def test_activity_intervals_and_states(tmp_path):
+    import datetime as dt
+
+    current = dt.datetime.fromisoformat("2026-11-04T12:00:00+00:00")
+    (tmp_path / "running").mkdir()
+    def run(agent, start, end=None, exit=0):
+        return {"agent": agent, "mode": "work", "ticket": "0020",
+                "start": f"2026-11-04T{start}+00:00",
+                **({"end": f"2026-11-04T{end}+00:00", "exit": exit} if end else {})}
+    history = [run("codex", "11:50:00", "11:58:00"),
+               run("pi", "08:00:00", "08:30:00"),
+               run("claude", "11:00:00", "11:30:00", 1),
+               run("future-agent", "09:00:00", "09:01:00"),
+               run("future-agent", "10:00:00", "10:01:00", 2)]
+    (tmp_path / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in history)
+                                         + '\nnull\n[]\n{"partial":')
+    (tmp_path / "running" / "future-agent.json").write_text(
+        json.dumps(run("future-agent", "11:40:00")))
+    data = dashboard.state(tmp_path, tmp_path / "runs", current)["activity"]
+    agents = {a["agent"]: a for a in data["agents"]}
+    assert agents["codex"]["state"] == "resting"
+    assert agents["codex"]["until"] == "2026-11-04T12:03:00+00:00"
+    assert agents["claude"]["state"] == "resting"
+    assert agents["claude"]["until"] == "2026-11-04T13:30:00+00:00"
+    assert agents["pi"]["state"] == "idle"
+    assert agents["future-agent"]["state"] == "running"
+    assert agents["future-agent"]["elapsed"] == 1200
+    assert len(data["runs"]) == 6
+    assert data["runs"][0]["duration"] == 480
+    assert data["runs"][4]["exit"] == 2
+    assert data["runs"][-1]["end"] is None
+    assert data["runs"][0]["title"] == ""
+    # A completed record can briefly coexist with its running file.
+    (tmp_path / "running" / "codex.json").write_text(json.dumps(history[0]))
+    assert len(dashboard.state(tmp_path, tmp_path / "runs", current)["activity"]["runs"]) == 6
+
+
+def test_shared_dispatch_cap_boundary(monkeypatch):
+    import datetime as dt
+
+    current = dt.datetime.fromisoformat("2026-11-04T12:00:00+00:00")
+    monkeypatch.setitem(dashboard.dispatch.MAX_RUNS_PER_WINDOW, "codex", 2)
+    history = [{"agent": "codex", "mode": "work", "ticket": "0020",
+                "start": f"2026-11-04T{hour}:00:00+00:00",
+                "end": f"2026-11-04T{hour}:10:00+00:00", "exit": 0}
+               for hour in ("08", "09")]
+    status, until = dashboard.dispatch.agent_pause("codex", history, current)
+    assert status == "capped"
+    assert dashboard.activity(history, [], {}, current)["agents"][0]["state"] == "capped"
+    assert until == current + dt.timedelta(hours=1)
+    assert dashboard.dispatch.agent_pause("codex", history, until) == ("idle", None)
+    assert dashboard.dispatch.agent_pause("unknown", [], current) == ("idle", None)

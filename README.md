@@ -88,7 +88,7 @@ uv run python -m data_processing.run data/run-config.json runs/experiment-1
 # Read-only inventory of GPUs, storage, model servers and models on disk
 uv run python ops/inventory.py
 
-# Dashboard (board, agent activity, run metrics) on http://localhost:8300
+# Dashboard (board, live agent timeline, runs and metrics; Pacific times) on http://localhost:8300
 python3 dashboard/server.py --port 8300
 ```
 
