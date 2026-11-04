@@ -44,6 +44,7 @@ WINDOW = dt.timedelta(hours=5)
 MAX_RUNS_PER_WINDOW = {"claude": 12, "codex": 15, "pi": 30}
 MIN_GAP = {"claude": dt.timedelta(minutes=5), "codex": dt.timedelta(minutes=5), "pi": dt.timedelta(0)}
 FAIL_COOLDOWN = dt.timedelta(hours=2)  # after a failed run (often a usage limit), wait before retrying
+PIPELINE_INTERVAL = dt.timedelta(hours=6)
 PLAN_INTERVAL = dt.timedelta(hours=3)  # at most one planning run per 3 hours
 PUSH_TRIES = 5  # GitHub SSH rejected ~half of connections on 2026-11-04
 MIN_QUEUE = 2  # plan more work when a worker has fewer ready tickets than this
@@ -136,13 +137,16 @@ def launch(agent, mode, ticket):
     start = now()
     tid = ticket["id"] if ticket else "-"
     name = f"{start:%Y%m%d-%H%M%S}-{agent}-{mode}-{tid}"
-    prompt = (PROMPTS / ("worker-work.md" if agent in WORKERS else f"{agent}-{mode}.md")).read_text()
-    subs = {"$TICKET": str(ticket["path"]) if ticket else "", "$REPO": str(REPO), "$WT": str(WT), "$AGENT": agent,
-            "$OWNER": ticket["owner"] if ticket else ""}
-    for key, value in subs.items():
-        prompt = prompt.replace(key, value)
+    if agent != "pipeline":
+        prompt = (PROMPTS / ("worker-work.md" if agent in WORKERS else f"{agent}-{mode}.md")).read_text()
+        subs = {"$TICKET": str(ticket["path"]) if ticket else "", "$REPO": str(REPO), "$WT": str(WT), "$AGENT": agent,
+                "$OWNER": ticket["owner"] if ticket else ""}
+        for key, value in subs.items():
+            prompt = prompt.replace(key, value)
     clone, gitdir = WT / agent, WT / f"{agent}-gitdir"
-    if agent == "codex":
+    if agent == "pipeline":
+        cmd = ["uv", "run", "python", "ops/iterate.py"]
+    elif agent == "codex":
         cmd = ["codex", "exec", "-c", 'model_reasoning_effort="medium"', "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true",
                "--add-dir", str(gitdir), "--add-dir", str(BOARD), "--add-dir", str(DATA), "--add-dir", str(Path.home() / ".cache" / "uv"),
                "-C", str(clone), prompt]
@@ -236,8 +240,13 @@ def resting(agent):
 def tick():
     if (BOARD / "STOP").exists():
         return
-    ts = tickets()
+    pipeline_busy = reap("pipeline")
     history, current = runs(), now()
+    pipeline_runs = [dt.datetime.fromisoformat(r["start"]) for r in history if r["agent"] == "pipeline"]
+    if (not pipeline_busy and (REPO / "iterate.local.json").exists()
+            and (not pipeline_runs or current - max(pipeline_runs) >= PIPELINE_INTERVAL)):
+        launch("pipeline", "iterate", None)
+    ts = tickets()
     capped = {a for a in MAX_RUNS_PER_WINDOW if agent_pause(a, history, current)[0] != "idle"}
 
     for worker in WORKERS:

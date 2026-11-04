@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -56,3 +57,71 @@ def test_resting_after_recent_or_failed_run(tmp_path, monkeypatch):
     assert not dispatch.resting("codex")
     runs.write_text(f'{{"agent": "codex", "end": "{ago(minutes=40)}", "exit": 1}}\n')
     assert dispatch.resting("codex")
+
+
+def test_pipeline_schedule(tmp_path, monkeypatch):
+    monkeypatch.setattr(dispatch, 'REPO', tmp_path)
+    monkeypatch.setattr(dispatch, 'BOARD', tmp_path)
+    monkeypatch.setattr(dispatch, 'tickets', list)
+    monkeypatch.setattr(dispatch, 'reap', lambda a: a != 'pipeline')
+    launched = []
+    monkeypatch.setattr(dispatch, 'launch', lambda *args: launched.append(args))
+    history = []
+    monkeypatch.setattr(dispatch, 'runs', lambda: history)
+    dispatch.tick()
+    assert not launched  # no local config
+    (tmp_path / 'iterate.local.json').write_text('{}')
+    dispatch.tick()
+    assert launched == [('pipeline', 'iterate', None)]
+    launched.clear()
+    history.append({'agent': 'pipeline', 'start': dispatch.now().isoformat(),
+                    'end': dispatch.now().isoformat(), 'exit': 0})
+    dispatch.tick()
+    assert not launched
+    history[0]['start'] = (dispatch.now() - dispatch.dt.timedelta(hours=6)).isoformat()
+    dispatch.tick()
+    assert len(launched) == 1
+    launched.clear()
+    (tmp_path / 'STOP').touch()
+    dispatch.tick()
+    assert not launched
+
+
+def test_pipeline_launch_has_no_agent_or_prompt(tmp_path, monkeypatch):
+    monkeypatch.setattr(dispatch, 'REPO', tmp_path)
+    monkeypatch.setattr(dispatch, 'LOGS', tmp_path)
+    monkeypatch.setattr(dispatch, 'RUNNING', tmp_path)
+    commands = []
+
+    class Process:
+        pid = 123
+
+    def popen(cmd, **kwargs):
+        commands.append(cmd)
+        return Process()
+
+    monkeypatch.setattr(dispatch.subprocess, 'Popen', popen)
+    dispatch.launch('pipeline', 'iterate', None)
+    assert commands[0][-4:] == ['uv', 'run', 'python', 'ops/iterate.py']
+    assert json.loads((tmp_path / 'pipeline.json').read_text())['agent'] == 'pipeline'
+
+
+def test_pipeline_reap_is_counted_before_scheduling(tmp_path, monkeypatch):
+    monkeypatch.setattr(dispatch, 'REPO', tmp_path)
+    monkeypatch.setattr(dispatch, 'BOARD', tmp_path)
+    monkeypatch.setattr(dispatch, 'tickets', list)
+    (tmp_path / 'iterate.local.json').write_text('{}')
+    history, launched = [], []
+    monkeypatch.setattr(dispatch, 'runs', lambda: history)
+    monkeypatch.setattr(dispatch, 'launch', lambda *args: launched.append(args))
+
+    def reap(agent):
+        if agent == 'pipeline':
+            history.append({'agent': 'pipeline', 'start': dispatch.now().isoformat(),
+                            'end': dispatch.now().isoformat(), 'exit': 0})
+            return False
+        return True
+
+    monkeypatch.setattr(dispatch, 'reap', reap)
+    dispatch.tick()
+    assert not launched

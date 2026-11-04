@@ -1,0 +1,20 @@
+{
+  "sources": [
+    {
+      "source": "jackhhao",
+      "inputs": ["/mnt/storage/llm_security/raw/jackhhao/jailbreak-classification/default/jailbreak_dataset_full.csv"],
+      "revision": "REPLACE",
+      "timestamp": "2026-11-04T00:00:00Z"
+    }
+  ],
+  "split": {
+    "heldout_families": ["jackhhao/jailbreak-classification"],
+    "proportions": {"train": 0.7, "dev": 0.15, "test": 0.15}
+  },
+  "sample_cap": 8,
+  "model": "REPLACE_WITH_PINNED_SERVED_MODEL_ID",
+  "max_tokens": 128,
+  "pipeline_version": "end-to-end-v0",
+  "rule_threshold": 0.75,
+  "model_threshold": 0.5
+}

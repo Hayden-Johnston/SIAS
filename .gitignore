@@ -31,3 +31,6 @@ docs/rig.md
 
 # Local prototype endpoints and model configuration
 config.local.json
+
+# Local iteration source paths and model selection
+iterate.local.json

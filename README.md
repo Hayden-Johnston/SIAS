@@ -17,7 +17,7 @@ keeps generating new attacks to test it.
 | **Target** | 99.999% attack detection with under 0.02% false positives on a held-out set |
 | **Scope** | Prompt-level attacks only: no malware, exploit code or anything beyond prompts |
 | **Runs on** | One local rig (AMD GPUs, ROCm). No cloud inference in the pipeline |
-| **Status** | Phase 1 infrastructure. Working toward the first end-to-end scored iteration |
+| **Status** | Phase 1 infrastructure. Scheduled end-to-end sampled scoring available |
 
 ![SIAS architecture: orchestrator agents direct a red team of open-weight models that builds prompt-injection and jailbreak datasets, which iteratively improve the security controls](docs/images/architecture.png)
 
@@ -132,6 +132,39 @@ backoff; exhausted jobs remain pending for a later drain. Other HTTP errors, mal
 and explicit refusals are marked failed and raise `ProxyError`, stopping the drain without retrying
 that job. A crash during an HTTP call can repeat that call on resume. Streaming is unsupported.
 The database contains request and response text: keep it local and outside git.
+
+### Scheduled iterations
+
+Copy `iterate.example.json` to gitignored `iterate.local.json`. Set the ordered local snapshot
+paths, pinned revisions/timestamps, held-out families, model checkpoint ID, sample cap and stage
+thresholds. Then run:
+
+```sh
+uv run python ops/iterate.py                 # defaults to iterate.local.json
+```
+
+The iteration refreshes source loaders and family splits when inputs, configuration or producer
+code change. It scores rules and a queued Maya classifier on the same deterministic capped sample
+of each dev (validation) and heldout split, then replays both stages. It writes numbered manifests
+under the configured data directory's `runs/` and a dated report in `reports/`. These are exploratory
+source-label metrics, with `evaluator_approved: false`; the sample cap is per split, and no scores
+are fabricated for rows outside the sample. The generated report and run IDs identify each split.
+Full split counts and the cap are recorded in `runs/.iterations/*/complete.json`.
+
+Identical inputs/configuration/code reuse the iteration number and caches, including measured
+latencies. Interrupted iterations resume checkpoints; completed model responses replay without
+inference. Classification requires an exact `0` or `1`; missing/invalid scores fail the run.
+Persisted failed requests stop before further inference and need operator review. Use a checkpoint
+specific served model ID and bump `pipeline_version` when the underlying weights change. This
+baseline classifies whole stored text; chunking, red-team generation and evaluator ingestion are
+separate workflows.
+
+The existing `ops/dispatch.py tick` launches a token-free `pipeline` worker at most every six hours
+when `iterate.local.json` exists in the integration checkout. It uses the existing timeout/log/reap
+mechanism, respects `board/STOP`, and never starts or stops a model server. The orchestrator owns
+that local configuration. `--config` and `--data` override the script's config and storage root;
+the dashboard must use the corresponding `--runs` directory. Local queue/cache files contain text
+and stay outside git.
 
 ## Repository layout
 
