@@ -27,6 +27,7 @@ PROMPTS = REPO / "ops" / "prompts"
 WT = REPO.parent / "llm_security-wt"
 CODEX_CLONE = WT / "codex"  # separate clone: Codex's sandbox can't write a .git inside its workspace
 CODEX_GITDIR = WT / "codex-gitdir"
+DATA = Path("/mnt/storage/llm_security")  # raw data, caches and runs (docs/infrastructure.md)
 
 OWNERS = {"claude", "codex", "user"}
 STATUSES = {"todo", "doing", "review", "done", "blocked"}
@@ -122,7 +123,7 @@ def launch(agent, mode, ticket):
     prompt = prompt.replace("$WT", str(WT))
     if agent == "codex":
         cmd = ["codex", "exec", "-c", 'model_reasoning_effort="medium"', "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true",
-               "--add-dir", str(CODEX_GITDIR), "--add-dir", str(BOARD), "--add-dir", str(Path.home() / ".cache" / "uv"),
+               "--add-dir", str(CODEX_GITDIR), "--add-dir", str(BOARD), "--add-dir", str(DATA), "--add-dir", str(Path.home() / ".cache" / "uv"),
                "-C", str(CODEX_CLONE), prompt]
     else:
         cmd = ["claude", "-p", prompt, "--model", "sonnet", "--effort", "medium", "--permission-mode", "auto", "--add-dir", str(WT)]  # --add-dir is variadic
