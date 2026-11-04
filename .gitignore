@@ -16,3 +16,8 @@ wheels/
 # Data
 data/dev
 results
+# Agent board (local operational state)
+board/
+
+# Contains internal hosts; local only until scrubbed
+docs/rig.md
