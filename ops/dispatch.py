@@ -49,6 +49,7 @@ MIN_GAP = {"claude": dt.timedelta(minutes=5), "codex": dt.timedelta(minutes=5), 
 FAIL_COOLDOWN = dt.timedelta(hours=2)  # after a failed run (often a usage limit), wait before retrying
 PIPELINE_INTERVAL = dt.timedelta(hours=6)
 PLAN_INTERVAL = dt.timedelta(hours=3)  # at most one planning run per 3 hours
+IDLE_PLAN_INTERVAL = dt.timedelta(minutes=30)  # sooner when a worker has nothing ready
 PUSH_TRIES = 5  # GitHub SSH rejected ~half of connections on 2026-11-04
 MIN_QUEUE = 2  # plan more work when a worker has fewer ready tickets than this
 ENV = {**os.environ, "PATH": f"{Path.home()}/.local/bin:/usr/local/bin:/usr/bin:/bin"}
@@ -307,10 +308,12 @@ def tick():
         if t:
             return launch("claude", "work", t)
         by_id = {t["id"]: t for t in ts}
-        starved = any(sum(t["owner"] == w and ready(t, by_id) for t in ts) < MIN_QUEUE for w in WORKERS)
+        queues = [sum(t["owner"] == w and ready(t, by_id) for t in ts) for w in WORKERS]
+        starved = min(queues) < MIN_QUEUE
         stuck = any(t["status"] == "blocked" and t["owner"] != "user" for t in ts)
         plans = [dt.datetime.fromisoformat(r["start"]) for r in runs() if r["mode"] == "plan"]
-        if (starved or stuck) and (not plans or now() - max(plans) > PLAN_INTERVAL):
+        interval = IDLE_PLAN_INTERVAL if min(queues) == 0 else PLAN_INTERVAL
+        if (starved or stuck) and (not plans or now() - max(plans) > interval):
             launch("claude", "plan", None)
 
 
