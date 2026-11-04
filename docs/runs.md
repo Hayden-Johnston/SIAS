@@ -6,7 +6,7 @@ prototype entrypoint remains unchanged. Deterministic rule stages can also expor
 this cache contract; their production is separate from replay.
 
 ```sh
-PYTHONPATH=src python3 -m data_processing.run data/run-config.json runs/experiment-1
+uv run python -m data_processing.run data/run-config.json runs/experiment-1
 ```
 
 Paths in the config are relative to the config file. Run ID and timestamp are supplied explicitly
