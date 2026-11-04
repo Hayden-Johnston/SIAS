@@ -39,6 +39,14 @@ def test_rejects_unknown_status(board):
         dispatch.set_field("1", "status", "wip")
 
 
+def test_dotenv(tmp_path, monkeypatch):
+    monkeypatch.setattr(dispatch, "REPO", tmp_path)
+    (tmp_path / ".env").write_text("A=1\nB = two\nno_equals_here\n")
+    assert dispatch.dotenv("A") == "1"
+    assert dispatch.dotenv("B") == "two"
+    assert dispatch.dotenv("C") == ""
+
+
 def test_resting_after_recent_or_failed_run(tmp_path, monkeypatch):
     runs = tmp_path / "runs.jsonl"
     monkeypatch.setattr(dispatch, "RUNS", runs)
