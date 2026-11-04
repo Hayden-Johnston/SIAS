@@ -1,0 +1,12 @@
+{
+  "fields": {"text": "text"},
+  "defaults": {
+    "label": 1,
+    "attack_family": "Lakera/gandalf_ignore_instructions",
+    "group_id": "Lakera/gandalf_ignore_instructions",
+    "variant_type": "plain",
+    "channel": "direct",
+    "techniques": ["override"],
+    "spans": null
+  }
+}

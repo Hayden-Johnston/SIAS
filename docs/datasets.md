@@ -179,3 +179,52 @@ reports; do not inspect or display raw prompt corpora.
 - Keep a held-out set that is never used for tuning.
 - The evaluator approves items into datasets and tracks label source. Only datasets marked publishable
   may be published; a row's `publishable: yes` alone is not approval.
+
+## Approved source loaders
+
+`data_processing.sources` reads local snapshots only (CSV, Parquet, JSONL, gzipped JSONL,
+and LLMail's prompt-to-annotation JSON). It passes converted rows through `normalize.py`.
+No model or online dataset loader runs. Download only the approved snapshots, checking the
+card license against the approval report first. Supply their pinned revision and snapshot time:
+
+```sh
+uv run python -m data_processing.sources deepset data/raw/train.parquet data/raw/test.parquet \
+  --output data/normalized/deepset.jsonl --manifest data/normalized/deepset.manifest.json \
+  --revision SNAPSHOT_COMMIT --timestamp 2026-11-04T00:00:00Z
+```
+
+Input file order is explicit and participates in replay. Revisions and timestamps are supplied,
+never guessed; timestamps record the snapshot, not the original prompt creation time. Citations
+point to the source snapshot; license and publication declarations follow ticket 0005.
+
+| Source name | Conversion and selection |
+|---|---|
+| `deepset` | `text`, integer `label` |
+| `jackhhao` | `prompt`, explicit `type` (`benign` / `jailbreak`); use the full default CSV once, not overlapping train/test copies |
+| `trustair` | `prompt`, boolean `jailbreak`; source community names become families and `named_jailbreak`, otherwise `novel`; use December snapshots once |
+| `gandalf` | `text`; the source explicitly contains ignore-instruction attacks (`override`) |
+| `spml` | `User Prompt`, explicit `Prompt injection` (`0` / `1`); empty user prompts excluded; system prompts are task context, not the attack text |
+| `llmail` | labelled JSON keys are email texts; only boolean `true` or string `True` in `attack_attempt` qualifies; first 50,000 unique qualifying rows in input order; other annotations excluded |
+| `dolly` | benign instruction plus nonempty context separated by two newlines; answers excluded |
+| `oasst2` | ready tree JSONL; each reviewed, undeleted root-to-leaf path becomes a compact user/assistant array; all paths in one tree share a group |
+| `jbb` | catalogues seed counts/checksums; emits an empty scored JSONL, never labels behaviors as attacks |
+
+LLMail uses `email`; OASST2 uses `multi_turn`; other approved sources use their direct prompt
+channel. Unannotated attack techniques are `novel` and spans are unknown (`null`); benign rows
+have empty techniques and spans. No text-based technique guessing occurs. Source-level benign
+approvals are not independent evaluator labels.
+
+Gandalf uses a flat JSON mapping in `src/data_processing/source_mappings/`, merged with the
+explicit snapshot provenance. It keeps the source-wide family/group. Other sources need small
+conversions for labels, grouping or nested text. Loaders derive other missing groups from text
+hashes, use source families where present, and collapse
+identical mapped records while reporting duplicate counts. Near duplicates, cross-source
+duplicates, conflicting labels and original train/test splits are not resolved here. Family-aware
+splits remain a separate step. OASST2 branches containing rejected/deleted nodes are omitted,
+not spliced into shorter conversations.
+
+Manifests add loader version, pinned citation, ordered raw-file SHA-256 values, input-row,
+duplicate and excluded counts, and the source role. The normalizer's `source_sha256` hashes
+the converted intermediate JSONL; `loader.raw_sha256` hashes the original files. Manifests
+contain aggregates only and retain `evaluator_approved: false`. The output checksum remains
+the completion check. To replay, use the same files, order, loader version, revision and timestamp.

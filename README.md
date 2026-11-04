@@ -82,6 +82,11 @@ uv run python -m data_processing.normalize source.jsonl out.jsonl --manifest out
 # Capture hidden-state activations (needs `uv sync --extra activations`; CPU, resumable)
 uv run python -m data_processing.activations out.jsonl activations/dev --dataset-manifest out.manifest.json
 
+# Load an approved local snapshot (source names and selection rules: docs/datasets.md)
+uv run python -m data_processing.sources deepset data/raw/train.parquet \
+  --output data/normalized/deepset.jsonl --manifest data/normalized/deepset.manifest.json \
+  --revision SNAPSHOT_COMMIT --timestamp 2026-11-04T00:00:00Z
+
 # Replay a scored run from cached stage outputs
 uv run python -m data_processing.run data/run-config.json runs/experiment-1
 
@@ -141,6 +146,10 @@ log is in [reports/2026-11-04-dataset-approvals.md](reports/2026-11-04-dataset-a
 | [JailbreakBench/JBB-Behaviors](https://huggingface.co/datasets/JailbreakBench/JBB-Behaviors) | MIT | red-team seeds only |
 | [databricks/databricks-dolly-15k](https://huggingface.co/datasets/databricks/databricks-dolly-15k) | CC-BY-SA-3.0 | benign instructions |
 | [OpenAssistant/oasst2](https://huggingface.co/datasets/OpenAssistant/oasst2) | Apache-2.0 | benign multi-turn |
+
+Local loaders and measured import counts for these sources are documented in
+[reports/2026-11-04-source-loaders.md](reports/2026-11-04-source-loaders.md).
+JBB is catalogued as seeds only and contributes no scored rows. Imports still require evaluator review.
 
 No public source covers long context, documents, tool output, code comments or hard negatives well.
 Those come from the red team and must be approved by the evaluator. Generated data is published only
