@@ -45,6 +45,8 @@ its threshold, so most traffic never reaches a model. Stage order is decided by 
 Long inputs are split into chunks so the pipeline can also report *where* an attack sits.
 The CPU rule scorer exports row caches or optional chunk caches for location measurements
 ([usage](docs/runs.md)).
+An optional CPU llama.cpp classifier exports the same chunk-cache format through an already
+running local endpoint ([setup and replay](docs/pipeline.md#cpu-model-score-cache)).
 
 Every run is **deterministic and replayable**. Model outputs are cached once. Scoring runs replay
 those caches against a pinned dataset and write a manifest with counts, rates, confidence intervals,
