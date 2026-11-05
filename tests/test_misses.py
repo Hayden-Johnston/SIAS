@@ -36,9 +36,12 @@ def update(path, **fields):
     path.write_text(json.dumps(json.loads(path.read_text()) | fields))
 
 
-def test_groups_counts_and_deterministic_cli(fixture):
+@pytest.mark.parametrize("split", ["validation", "held_out"])
+def test_groups_counts_and_deterministic_cli(fixture, split):
     manifest, output = fixture
+    update(manifest, evaluation_split=split)
     result = misses.misses(manifest, output)
+    assert result["evaluation_split"] == split
     assert result["records"] == 5
     assert result["attacks"] == 4
     assert result["missed"] == 3
@@ -75,7 +78,8 @@ def test_output_allowlist_and_unknown_fields_not_copied(fixture):
 
 
 @pytest.mark.parametrize("fields, message", [
-    ({"evaluation_split": "validation"}, "held_out"),
+    ({"evaluation_split": "train"}, "validation or held_out"),
+    ({"evaluation_split": "unknown"}, "validation or held_out"),
     ({"status": "incomplete"}, "complete"),
     ({"results_file": "other.jsonl"}, "results_file"),
     ({"results_sha256": "wrong"}, "checksum"),

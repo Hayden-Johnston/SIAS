@@ -68,6 +68,23 @@ RULES = (
         r"|\[/?inst\]|<<?/?sys>>?|</?(?:system|assistant|developer)>"
         r"|(?:^|\n)\s*(?:system|developer|assistant)\s*:"
     )),
+    # Dev misses: a persona switch must name an unconstrained role; ordinary
+    # role requests (teacher, editor, etc.) are not enough. Reuse the delimiter
+    # rule's strength: these are explicit instruction cues, not probabilities.
+    (0.75, re.compile(
+        r"\b(?:act as|pretend (?:to be|you are)|you are now)\b"
+        r"(?:\W+\w+){0,8}\W+"
+        r"(?:unrestricted|unfiltered|uncensored|amoral|immoral|dan|jailbroken)\b"
+    )),
+    # Bound safety-suspension cues to a constraint noun, and refusal suppression
+    # to a request noun, so isolated safety vocabulary does not trigger a catch.
+    (0.75, re.compile(
+        r"\b(?:no|without|not bound by|free from)(?:\s+(?:any|all|the|such))?\s+"
+        r"(?:ethical|moral|safety|content)\s+"
+        r"(?:constraints?|restrictions?|guidelines?|filters?|rules?|limits?)\b"
+        r"|\b(?:never|do not|don't)\s+(?:refuse|decline|reject)\b"
+        r"(?:\W+\w+){0,4}\W+(?:requests?|questions?|commands?|instructions?|answers?)\b"
+    )),
     # Encoding is suspicious but also common in benign technical material.
     # Require 32 base64 characters (eight blocks), eight escapes/percent bytes,
     # or sixteen hex bytes. This weak signal also applies to undecodable data.

@@ -161,13 +161,16 @@ deltas (chosen minus all-ones). Undefined held-out rates and deltas are null. Re
 inputs produce identical output. Split declarations do not prove family/group separation: use
 properly separated, approved splits, and do not tune by repeatedly inspecting held-out results.
 
-## Held-out miss analysis
+## Miss analysis
 
 ```sh
+# Choose rule changes from dev misses only.
+uv run python -m data_processing.misses runs/dev/manifest.json runs/dev/misses.json
+# Report held-out gaps only after freezing the rules.
 uv run python -m data_processing.misses runs/heldout/manifest.json runs/heldout/misses.json
 ```
 
-This replay-only script reads a complete `held_out` run manifest and its sibling
+This replay-only script reads a complete `validation` (dev) or `held_out` run manifest and its sibling
 `results.jsonl`, verifying the results checksum and record count before writing. It needs
 no dataset, model, network or server operations. Misses are attack rows whose cached
 `fused_score` is strictly below the manifest's fusion threshold; equality is detected.
@@ -181,9 +184,10 @@ text, messages, model responses or paths. Manifest/results checksums, threshold 
 evaluator approval flag record provenance. Identical inputs produce identical bytes;
 invalid inputs preserve an existing output. Use one writer with frozen run inputs.
 
-The held-out declaration and approval flag are inherited, not independently verified.
-IDs describe only rows scored by that run, which may be a capped sample. Use this for
-reporting gaps; repeatedly tuning against these IDs compromises held-out measurement.
+The split declaration and approval flag are inherited, not independently verified.
+IDs describe only rows scored by that run, which may be a capped sample. Use validation
+misses to choose changes; held-out misses are for reporting gaps only. Repeatedly tuning
+against held-out IDs compromises held-out measurement.
 
 ## Statistics
 

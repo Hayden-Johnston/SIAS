@@ -1,4 +1,4 @@
-"""Export held-out missed attack IDs from a completed replay run, without inference."""
+"""Export validation or held-out missed attack IDs from a completed replay run, without inference."""
 
 import argparse
 from collections import defaultdict
@@ -13,8 +13,8 @@ def misses(manifest_path, output):
     manifest = run.load_json(manifest_path)
     if (not isinstance(manifest, dict) or manifest.get("schema_version") != 1
             or manifest.get("status") != "complete"
-            or manifest.get("evaluation_split") != "held_out"):
-        raise ValueError("a complete held_out run manifest is required")
+            or manifest.get("evaluation_split") not in ("validation", "held_out")):
+        raise ValueError("a complete validation or held_out run manifest is required")
     if manifest.get("results_file") != "results.jsonl":
         raise ValueError("run results_file must be results.jsonl")
     results_path = manifest_path.parent / "results.jsonl"
@@ -50,7 +50,7 @@ def misses(manifest_path, output):
     if type(manifest.get("records")) is not int or manifest["records"] != len(seen):
         raise ValueError("run record count mismatch")
     result = {
-        "schema_version": 1, "evaluation_split": "held_out",
+        "schema_version": 1, "evaluation_split": manifest["evaluation_split"],
         "manifest_sha256": run.digest(manifest_path),
         "results_sha256": manifest["results_sha256"], "threshold": threshold,
         "evaluator_approved": manifest.get("evaluator_approved") is True,
