@@ -61,12 +61,13 @@ channel, length, technique and attack family, keeping small samples visible with
 
 1. A local **generator** model (GLM) writes candidate attacks in plain, paraphrased and obfuscated forms.
 2. An **evaluator** model from a different family labels the candidates and approves them into the dataset.
-3. The dataset is split by attack family, with a held-out set that is never used for tuning.
+3. Reserved attack families go only to held-out; other attacks and benign groups are hash-split.
 4. The **pipeline** is scored on it and the metrics go to the dashboard.
 5. Agents change rules, thresholds or models, and the next iteration starts.
 
-Splits are by attack family, never random, so the held-out set measures generalization to attacks
-the pipeline was not tuned on. All variants of one attack stay in the same split.
+Reserved families never appear in train/dev/test. Other families can span splits, with variants of
+one attack kept together by group. Held-out metrics mix familiar and novel families; per-family
+metrics separate them. See the [split trade-off](docs/datasets.md#splits-and-hygiene).
 
 ## Measuring honestly
 

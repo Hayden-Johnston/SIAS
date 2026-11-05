@@ -13,19 +13,22 @@ from pathlib import Path
 
 from data_processing.normalize import canonical_json
 
+SPLIT_VERSION = 2
+
 SPLITS = ("train", "dev", "test", "heldout")
 
 
 def _hash_to_split(name, proportions):
-    """Map a name to train/dev/test via SHA-256 and cumulative proportions."""
+    """Hash a group to a split, sharing the test allocation with heldout."""
     digest = int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest()[:4], "big")
     bucket = digest % 100
     cumulative = 0
-    for split in ("train", "dev", "test"):
-        cumulative += round(proportions[split] * 100)
+    for split in SPLITS:
+        weight = proportions[split] if split in ("train", "dev") else proportions["test"] / 2
+        cumulative += weight * 100
         if bucket < cumulative:
             return split
-    return "test"
+    return "heldout"
 
 
 def validate_split_config(config):
@@ -54,8 +57,8 @@ def _verify_checksum(path, expected):
 def split(input_path, manifest_path, config, output_dir):
     """Assign normalized rows to splits. Returns the split manifest dict.
 
-    Attack rows are split by attack_family; benign rows by group_id.
-    Held-out families are assigned to the heldout split explicitly.
+    Rows are split by group_id, preserving variants together.
+    Reserved attack families are assigned to the heldout split explicitly.
     A group_id that spans multiple families is an error.
     """
     input_path, manifest_path, output_dir = Path(input_path), Path(manifest_path), Path(output_dir)
@@ -88,11 +91,8 @@ def split(input_path, manifest_path, config, output_dir):
     # Assign each row to a split.
     split_rows = {s: [] for s in SPLITS}
     for row in rows:
-        if row["label"] == 1:
-            if row["attack_family"] in heldout_families:
-                split_name = "heldout"
-            else:
-                split_name = _hash_to_split(row["attack_family"], proportions)
+        if row["label"] == 1 and row["attack_family"] in heldout_families:
+            split_name = "heldout"
         else:
             split_name = _hash_to_split(row["group_id"], proportions)
         split_rows[split_name].append(row)
@@ -120,6 +120,7 @@ def split(input_path, manifest_path, config, output_dir):
     # Build manifest with counts per split; no text.
     result = {
         "schema_version": 2,
+        "split_version": SPLIT_VERSION,
         "input_sha256": manifest["output_sha256"],
         "config_sha256": hashlib.sha256(canonical_json(config).encode()).hexdigest(),
         "splits": {},
