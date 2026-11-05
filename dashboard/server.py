@@ -76,6 +76,13 @@ def manifest_fields(record):
             }
             for name, value in record.get("slices", {}).get("by_" + field, {}).items()
         }
+    novel = record.get("slices", {}).get("novel_technique")
+    result["slices"]["novel_technique"] = None if novel is None else [
+        {"technique": text(value["technique"]), "n": number(value["n"], integer=True),
+         "small_sample": number(value["n"], integer=True) < 20,
+         "detection": rate(value["detection"])}
+        for value in novel
+    ]
     result["stages"] = []
     for stage in record["stages"]:
         result["stages"].append({

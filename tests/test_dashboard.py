@@ -171,10 +171,15 @@ def test_slice_projection_and_older_manifests(tmp_path):
 
     record = synthetic_manifest()
     assert dashboard.manifest_fields(record)["slices"]["by_technique"] == {}
+    assert dashboard.manifest_fields(record)["slices"]["novel_technique"] is None
     record["slices"] = sliced_metrics([
         {"label": 1, "detected": True, "channel": "direct", "length_bucket": "0-4096",
          "techniques": ["novel", "encoding"], "attack_family": "synthetic-family"},
     ])
+    record["slices"]["novel_technique"] = [
+        {"technique": "encoding", "n": 1, "small_sample": False,
+         "detection": record["slices"]["by_technique"]["encoding"]["detection"],
+         "text": "DO NOT EXPOSE"}]
     record["slices"]["by_technique"]["novel"]["text"] = "DO NOT EXPOSE"
     write_manifest(tmp_path, record=record)
     result = dashboard.run_metrics(tmp_path)[0]
@@ -182,6 +187,11 @@ def test_slice_projection_and_older_manifests(tmp_path):
     assert group["n"] == 1 and group["small_sample"] is True
     assert group["detection"] == record["slices"]["by_technique"]["novel"]["detection"]
     assert group["false_positive"]["value"] is None
+    assert result["slices"]["novel_technique"] == [
+        {"technique": "encoding", "n": 1, "small_sample": True,
+         "detection": group["detection"]}]
+    record["slices"]["novel_technique"] = []
+    assert dashboard.manifest_fields(record)["slices"]["novel_technique"] == []
     assert "DO NOT EXPOSE" not in json.dumps(result)
 
 

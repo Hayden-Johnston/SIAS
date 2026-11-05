@@ -10,7 +10,12 @@ from collections import Counter
 from pathlib import Path
 from statistics import NormalDist
 
-from data_processing.normalize import canonical_json, utc_timestamp, validate_record
+from data_processing.normalize import (
+    TECHNIQUES,
+    canonical_json,
+    utc_timestamp,
+    validate_record,
+)
 
 
 def digest(path):
@@ -85,7 +90,7 @@ def windows(length, chunk_chars, overlap_chars):
     return [(start, min(start + chunk_chars, length)) for start in starts]
 
 
-def sliced_metrics(results):
+def sliced_metrics(results, dev_techniques=None):
     slices = {}
     for field in ("channel", "length_bucket", "technique", "attack_family"):
         groups = {}
@@ -97,6 +102,12 @@ def sliced_metrics(results):
             value: metrics(group) | {"n": len(group), "small_sample": len(group) < 20}
             for value, group in sorted(groups.items())
         }
+    slices["novel_technique"] = (None if dev_techniques is None else [
+        {"technique": technique, "n": group["n"], "small_sample": group["small_sample"],
+         "detection": group["detection"]}
+        for technique, group in slices["by_technique"].items()
+        if dev_techniques.get(technique, 0) == 0
+    ])
     return slices
 
 
@@ -132,7 +143,7 @@ def prepare(config_path):
     required = {"run_id", "timestamp", "iteration", "pipeline_version", "dataset",
                 "dataset_manifest", "evaluation_split", "stages"}
     if (not isinstance(config, dict) or not required <= set(config)
-            or set(config) - required - {"fusion"}):
+            or set(config) - required - {"fusion", "split_manifest"}):
         raise ValueError("run config must contain exactly the documented fields")
     fusion = config.get("fusion", {})
     if (not isinstance(fusion, dict) or set(fusion) - {"threshold", "weights"}
@@ -180,6 +191,28 @@ def prepare(config_path):
         row_by_id[row["id"]] = metadata
     if dataset_manifest.get("records") != len(rows):
         raise ValueError("dataset manifest record count mismatch")
+    dev_techniques = None
+    split_manifest_path = None
+    if "split_manifest" in config:
+        if (config["evaluation_split"] != "held_out"
+                or not isinstance(config["split_manifest"], str)
+                or not config["split_manifest"].strip()):
+            raise ValueError("split_manifest requires a held_out run and a nonempty path")
+        split_manifest_path = base / config["split_manifest"]
+        split_manifest = load_json(split_manifest_path)
+        if (not isinstance(split_manifest, dict) or split_manifest.get("schema_version") != 2
+                or not isinstance(split_manifest.get("splits"), dict)):
+            raise ValueError("invalid split manifest")
+        heldout = split_manifest["splits"].get("heldout", {})
+        dev = split_manifest["splits"].get("dev", {})
+        if (not isinstance(heldout, dict)
+                or heldout.get("output_sha256") != dataset_manifest["output_sha256"]):
+            raise ValueError("split manifest heldout checksum mismatch")
+        dev_techniques = dev.get("techniques") if isinstance(dev, dict) else None
+        if (not isinstance(dev_techniques, dict) or any(
+                technique not in TECHNIQUES or type(count) is not int or count < 0
+                for technique, count in dev_techniques.items())):
+            raise ValueError("split manifest requires nonnegative integer dev technique counts")
     stages, cache_paths, names = [], [], set()
     for stage in config["stages"]:
         fields = {"name", "version", "threshold", "cache", "cache_sha256"}
@@ -231,13 +264,17 @@ def prepare(config_path):
     if weights.keys() - names:
         raise ValueError("fusion weights contain unknown stage names")
     identity = {
-        "runner_version": 4, "config": config,
+        "runner_version": 5, "config": config,
         "dataset_sha256": dataset_manifest["output_sha256"],
         "dataset_manifest_sha256": digest(dataset_manifest_path),
     }
+    if split_manifest_path is not None:
+        identity["split_manifest_sha256"] = digest(split_manifest_path)
     identity_hash = hashlib.sha256(canonical_json(identity).encode()).hexdigest()
     inputs = {config_path.resolve(), dataset_path.resolve(), dataset_manifest_path.resolve(), *cache_paths}
-    return config, dataset_manifest, rows, stages, identity_hash, inputs
+    if split_manifest_path is not None:
+        inputs.add(split_manifest_path.resolve())
+    return config, dataset_manifest, rows, stages, identity_hash, inputs, dev_techniques
 
 
 def evaluate(row, stages, fusion=None):
@@ -278,7 +315,7 @@ def evaluate(row, stages, fusion=None):
 
 
 def replay(config_path, run_directory):
-    config, dataset_manifest, rows, stages, identity, inputs = prepare(config_path)
+    config, dataset_manifest, rows, stages, identity, inputs, dev_techniques = prepare(config_path)
     root = Path(run_directory)
     outputs = [root / name for name in ("results.jsonl", "manifest.json")]
     if inputs & {path.resolve() for path in outputs}:
@@ -324,7 +361,7 @@ def replay(config_path, run_directory):
         "evaluation_split": config["evaluation_split"],
         "evaluator_approved": dataset_manifest.get("evaluator_approved") is True,
         "records": len(results), "metrics": metrics(results),
-        "slices": sliced_metrics(results),
+        "slices": sliced_metrics(results, dev_techniques),
         "fusion": {"method": "max", "threshold": config.get("fusion", {}).get("threshold", 0.5),
                    "weights": {stage["name"]: config.get("fusion", {}).get("weights", {}).get(
                        stage["name"], 1) for stage, _ in stages},

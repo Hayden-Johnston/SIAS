@@ -126,10 +126,69 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(slices["by_attack_family"]["fixture"], techniques["novel"])
         self.assertEqual(slices["by_attack_family"]["benign"]["false_positive"], rate(1, 2))
 
+    def test_novel_techniques_against_dev(self):
+        path = self.root / "dataset.jsonl"
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[0]["techniques"] = ["novel", "encoding"]
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        manifest_path = self.root / "dataset.manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["output_sha256"] = digest(path)
+        manifest_path.write_text(json.dumps(manifest))
+        self.config.update(evaluation_split="held_out", split_manifest="split_manifest.json")
+        self.save_config()
+        split_path = self.root / "split_manifest.json"
+
+        def compare(counts):
+            split_path.write_text(json.dumps({"schema_version": 2, "splits": {
+                "dev": {"techniques": counts},
+                "heldout": {"output_sha256": digest(path)},
+            }}))
+            return self.replay()
+
+        seen = compare({"novel": 2, "encoding": 1})
+        self.assertEqual(seen["slices"]["novel_technique"], [])
+        mixed = compare({"novel": 2, "encoding": 0})
+        self.assertEqual(mixed["slices"]["novel_technique"], [
+            {"technique": "encoding", "n": 1, "small_sample": True, "detection": rate(1, 1)}])
+        unseen = compare({})
+        self.assertEqual(unseen["slices"]["novel_technique"], [
+            {"technique": "encoding", "n": 1, "small_sample": True, "detection": rate(1, 1)},
+            {"technique": "novel", "n": 2, "small_sample": True, "detection": rate(1, 2)}])
+        self.assertEqual(unseen, self.replay())
+        self.assertEqual(len({m["identity_sha256"] for m in (seen, mixed, unseen)}), 3)
+        # Changes to aggregate provenance also change the identity.
+        split = json.loads(split_path.read_text())
+        split["input_sha256"] = "a" * 64
+        split_path.write_text(json.dumps(split))
+        self.assertNotEqual(unseen["identity_sha256"], self.replay()["identity_sha256"])
+        before = (self.run_directory / "manifest.json").read_bytes()
+        split["splits"]["heldout"]["output_sha256"] = "0" * 64
+        split_path.write_text(json.dumps(split))
+        with self.assertRaisesRegex(ValueError, "heldout checksum"):
+            self.replay()
+        self.assertEqual(before, (self.run_directory / "manifest.json").read_bytes())
+        for counts in (None, {"novel": -1}, {"novel": True}, {"unknown": 1}):
+            with self.subTest(counts=counts), self.assertRaisesRegex(ValueError, "dev technique"):
+                compare(counts)
+        self.config["evaluation_split"] = "validation"
+        self.save_config()
+        with self.assertRaisesRegex(ValueError, "requires a held_out"):
+            self.replay()
+
+    def test_novel_technique_small_sample_boundary(self):
+        row = {"label": 1, "detected": False, "channel": "direct", "techniques": ["encoding"],
+               "length_bucket": "0-4096", "attack_family": "fixture"}
+        self.assertEqual(run.sliced_metrics([], {})["novel_technique"], [])
+        for n in (19, 20):
+            group = run.sliced_metrics([row] * n, {})["novel_technique"][0]
+            self.assertEqual(group["small_sample"], n < 20)
+            self.assertEqual(group["detection"], rate(0, n))
+
     def test_empty_slices_and_small_sample_boundary(self):
         self.assertEqual(run.sliced_metrics([]), {
             "by_channel": {}, "by_length_bucket": {}, "by_technique": {},
-            "by_attack_family": {},
+            "by_attack_family": {}, "novel_technique": None,
         })
         row = {"label": 0, "detected": False, "channel": "direct", "techniques": [],
                "length_bucket": "0-4096", "attack_family": "benign"}

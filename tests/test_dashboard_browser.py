@@ -78,6 +78,8 @@ def test_metric_slices(endpoint):
         {'label': 1, 'detected': False, 'channel': 'direct', 'length_bucket': '0-4096',
          'techniques': ['novel', 'encoding'], 'attack_family': '<img src=x>'},
     ])
+    record['slices']['novel_technique'] = [
+        {'technique': 'encoding', 'n': 1, 'small_sample': True, 'detection': rate(0, 1)}]
     write_manifest(root / 'runs', record=record)
     with playwright.sync_playwright() as browser_tools:
         browser = browser_tools.chromium.launch(args=['--no-sandbox'])
@@ -91,6 +93,14 @@ def test_metric_slices(endpoint):
             assert 'encoding' in page.locator('#metric-slices').inner_text()
             assert 'novel' in page.locator('#metric-slices').inner_text()
             assert page.locator('#metric-slices img').count() == 0
+            assert page.locator('#novel-techniques tr').count() == 1
+            assert 'encoding' in page.locator('#novel-techniques').inner_text()
+            assert 'n=1' in page.locator('#novel-techniques').inner_text()
+            assert 'small sample' in page.locator('#novel-techniques').inner_text()
+            record['slices']['novel_technique'] = []
+            write_manifest(root / 'runs', record=record)
+            page.evaluate('refresh()')
+            page.wait_for_function("document.querySelector('#no-novel-techniques').textContent.startsWith('No held-out')")
             write_manifest(root / 'runs', 1)
             page.evaluate('refresh()')
             page.wait_for_function("document.querySelectorAll('#slice-run option').length === 2")
@@ -98,6 +108,7 @@ def test_metric_slices(endpoint):
             page.locator('#slice-run').select_option('0')
             assert page.locator('#metric-slices tr').count() == 0
             assert page.locator('#no-slices').inner_text() == 'No slice metrics in this run'
+            assert 'Comparison unavailable' in page.locator('#no-novel-techniques').inner_text()
         finally:
             browser.close()
 

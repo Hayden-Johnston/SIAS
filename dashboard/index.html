@@ -52,7 +52,10 @@ a { color: #0072b2; } .swatch { display: inline-block; width: .8rem; height: .8r
 <div class="charts"><article id="detection-chart"></article><article id="fp-chart"></article></div></section>
 <section><h2>Metrics by slice</h2><label for="slice-run">Select run </label><select id="slice-run"></select>
 <p class="muted">Fused verdicts. Small samples (n&lt;20) stay visible. Techniques overlap; benign rows have no technique. Each rate has its own denominator and 95% Wilson interval.</p>
-<p id="no-slices" class="muted"></p><div class="table-wrap"><table><thead><tr><th>Slice</th><th>Value</th><th>Records</th><th>Detection (95% CI; n)</th><th>False positives (95% CI; n)</th></tr></thead><tbody id="metric-slices"></tbody></table></div></section>
+<p id="no-slices" class="muted"></p><div class="table-wrap"><table><thead><tr><th>Slice</th><th>Value</th><th>Records</th><th>Detection (95% CI; n)</th><th>False positives (95% CI; n)</th></tr></thead><tbody id="metric-slices"></tbody></table></div>
+<h3>Held-out techniques absent from dev</h3>
+<p class="muted">Each technique below has zero dev rows. Multi-technique rows contribute to each matching technique, including rows that also use seen techniques. This is distinct from the taxonomy label “novel”.</p>
+<p id="no-novel-techniques" class="muted"></p><div class="table-wrap"><table><thead><tr><th>Technique</th><th>Records</th><th>Detection (95% CI; n)</th></tr></thead><tbody id="novel-techniques"></tbody></table></div></section>
 </main>
 <script src="/metrics.js"></script>
 <script src="/activity.js"></script>

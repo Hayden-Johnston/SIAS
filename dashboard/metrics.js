@@ -101,6 +101,7 @@ function renderMetrics(runs) {
     const table = document.querySelector('#metric-slices'); table.replaceChildren();
     const run = runs[Number(sliceSelect.value)];
     for (const [field, groups] of Object.entries(run?.slices ?? {})) {
+      if (field === 'novel_technique') continue;
       for (const [name, slice] of Object.entries(groups)) {
         const row = el('tr');
         for (const value of [field.replace('by_', '').replace('_', ' '), name,
@@ -109,6 +110,18 @@ function renderMetrics(runs) {
         table.append(row);
       }
     }
+    const novelTable = document.querySelector('#novel-techniques'); novelTable.replaceChildren();
+    const novel = run?.slices?.novel_technique;
+    for (const slice of novel ?? []) {
+      const row = el('tr');
+      for (const value of [slice.technique,
+        `${slice.n}${slice.small_sample ? ' · small sample (n<20)' : ''}`,
+        rateLabel(slice.detection)]) row.append(el('td', value));
+      novelTable.append(row);
+    }
+    document.querySelector('#no-novel-techniques').textContent = novel == null ?
+      'Comparison unavailable: requires a held-out run with a split manifest.' :
+      novel.length ? '' : 'No held-out techniques absent from dev.';
     document.querySelector('#no-slices').textContent = table.children.length ? '' : 'No slice metrics in this run';
   };
   sliceSelect.disabled = !runs.length;
