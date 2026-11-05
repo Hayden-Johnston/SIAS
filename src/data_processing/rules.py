@@ -75,6 +75,12 @@ RULES = (
         r"\b(?:act as|pretend (?:to be|you are)|you are now)\b"
         r"(?:\W+\w+){0,8}\W+"
         r"(?:unrestricted|unfiltered|uncensored|amoral|immoral|dan|jailbroken)\b"
+        # Round-2 identity phrasing requires an adjacent model/persona noun
+        # (or DAN), so learning about unrestricted grammars is not a switch.
+        r"|\b(?:you are|pretend|roleplay|simulate|behave as)\s+"
+        r"(?:to be\s+)?(?:an?\s+)?"
+        r"(?:(?:unrestricted|unfiltered|uncensored|amoral|immoral|jailbroken)\s+"
+        r"(?:assistant|ai|model|chatbot|persona)|dan)\b"
     )),
     # Bound safety-suspension cues to a constraint noun, and refusal suppression
     # to a request noun, so isolated safety vocabulary does not trigger a catch.
@@ -84,6 +90,20 @@ RULES = (
         r"(?:constraints?|restrictions?|guidelines?|filters?|rules?|limits?)\b"
         r"|\b(?:never|do not|don't)\s+(?:refuse|decline|reject)\b"
         r"(?:\W+\w+){0,4}\W+(?:requests?|questions?|commands?|instructions?|answers?)\b"
+    )),
+    # Round-2 dev residuals: require a second-person subject near absent
+    # constraints, or universal compliance near a request noun. The short
+    # token windows keep unrelated vocabulary from combining across a document.
+    (0.75, re.compile(
+        r"\b(?:you|your (?:answers?|responses?))\b(?:\W+\w+){0,4}\W+"
+        r"(?:no|without|not subject to|not limited by|not restricted by)\b"
+        r"(?:\W+\w+){0,3}\W+"
+        r"(?:restrictions?|limitations?|constraints?|filters?|censorship)\b"
+    )),
+    (0.75, re.compile(
+        r"\b(?:always|must|will)\s+(?:answer|respond to|comply with|fulfill|obey)\b"
+        r"(?:\W+\w+){0,4}\W+(?:all|any|every)\s+"
+        r"(?:requests?|questions?|commands?|instructions?)\b"
     )),
     # Encoding is suspicious but also common in benign technical material.
     # Require 32 base64 characters (eight blocks), eight escapes/percent bytes,
