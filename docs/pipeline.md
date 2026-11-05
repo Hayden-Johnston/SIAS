@@ -216,6 +216,40 @@ IDs describe only rows scored by that run, which may be a capped sample. Use val
 misses to choose changes; held-out misses are for reporting gaps only. Repeatedly tuning
 against held-out IDs compromises held-out measurement.
 
+## False-positive audit
+
+```sh
+uv run python -m data_processing.fp_audit data/heldout-run.json \
+  data/splits/split_manifest.json runs/fp-audit.json
+```
+
+Supply an existing validation or held-out run config with a stage named `rules` and
+pinned score caches. The schema-v2 split manifest must have a `dev` or `heldout` entry
+matching the configured dataset checksum and record count. For augmented or sampled
+runs, supply the matching scoring split manifest, not the original unsampled manifest.
+The script uses the runner's dataset/cache validation and chunk maxima, then evaluates
+only benign rows. Their cached scores must be complete for every configured stage.
+No inference, network requests or server operations occur.
+
+Rules use their independent stage threshold; fusion uses the config's current weights
+and threshold, including defaults. Both flag equality. Nothing is fitted or rescored.
+The atomic JSON output and printed JSON report `benign`, `fp`, `false_positive` (fraction,
+denominator and 95% Wilson interval), and sorted flagged `ids`, overall and separately
+`by_channel` and `by_source`. Source groups use the dataset's exact `source` identifiers;
+synthetic augmentation controls retain their augmentation source. Only represented benign
+groups appear; an empty benign set has null rates and empty groups/IDs.
+
+The script joins benign source metadata from the pinned normalized dataset because
+score caches and split manifests do not contain row-level sources. It exports no text,
+messages, model responses or paths. Input identity, split-manifest checksum, thresholds,
+effective weights and inherited evaluator approval record provenance. Identical frozen
+inputs produce identical JSON bytes; invalid inputs preserve existing output and inputs
+cannot be overwritten. Use one writer with frozen inputs.
+
+Results apply only to scored rows and inherited labels. A capped fusion sample does not
+establish full-split FPR; synthetic controls and related variants are not independent
+real-world benign traffic. Held-out audits are for reporting, not threshold tuning.
+
 ## Statistics
 
 Report confidence intervals and sample sizes with every rate, and state the attack distribution the

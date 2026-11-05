@@ -61,6 +61,8 @@ counts, detected/missed counts and Wilson intervals, flagging attack samples bel
 A replay-only [stage ablation](docs/pipeline.md#replay-only-stage-ablation) refits fusion on dev
 after removing each stage and reports held-out detection/FPR deltas, counts and intervals.
 The dashboard Ablation page displays `stage-ablation.json` from its runs directory.
+A replay-only [false-positive audit](docs/pipeline.md#false-positive-audit) reports rules and
+configured fusion FPR by benign channel and source, with flagged IDs and no payload text.
 An offline [miss analysis](docs/pipeline.md#miss-analysis) exports dev or held-out missed
 attack IDs grouped by technique and channel, without loading payload text. Rule changes use
 dev misses only; held-out gaps are for reporting. Rules also catch bounded persona,
