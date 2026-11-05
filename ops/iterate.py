@@ -93,28 +93,34 @@ def red_team_round(work, config, timestamp):
     return summary
 
 
-def fused_runs(work, runs, configs, fpr_cap):
+def fused_runs(work, runs, configs, fpr_cap, probe_stages=None):
     """Replay the common sample only; never fill missing scores with inference."""
     paths = {}
     for evaluation in ('validation', 'held_out'):
         model = configs[f'{evaluation}-maya']
         rules_stage = configs[f'{evaluation}-rules']['stages'][0].copy()
         ids = {row['id'] for _, row in read_rows(model['dataset'])}
-        cache = work / f'{evaluation}-sample-rules-scores.jsonl'
-        atomic_write(cache, ''.join(canonical_json(row) + '\n'
-                                   for _, row in read_rows(rules_stage['cache'])
-                                   if row['id'] in ids).encode())
-        rules_stage.update(cache=str(cache.resolve()), cache_sha256=digest(cache))
+        stages = [rules_stage]
+        if probe_stages:
+            stages.append(probe_stages[evaluation].copy())
+        for stage in stages:
+            cache = work / f"{evaluation}-sample-{stage['name']}-scores.jsonl"
+            atomic_write(cache, ''.join(canonical_json(row) + '\n'
+                                       for _, row in read_rows(stage['cache'])
+                                       if row['id'] in ids).encode())
+            stage.update(cache=str(cache.resolve()), cache_sha256=digest(cache))
         config = model | {'run_id': model['run_id'].removesuffix('maya') + 'fused',
-                          'stages': [rules_stage, *model['stages']],
+                          'stages': [*stages, *model['stages']],
                           'fusion': {'threshold': 0.5}}
         path = work / f'{evaluation}-fused-run.json'
         write_json(path, config)
         paths[evaluation] = path
     dev = load_json(configs['validation-maya']['dataset_manifest'])
+    names = [stage['name'] for stage in config['stages']]
     if not all(dev['labels'].get(label, 0) for label in ('0', '1')):
         return {'status': 'unavailable: dev sample requires attacks and benign rows',
-                'fpr_cap': fpr_cap, 'held_out_delta_vs_best_single': None, 'manifests': []}
+                'stages': names, 'fpr_cap': fpr_cap,
+                'held_out_delta_vs_best_single': None, 'manifests': []}
     selected = sweep.sweep(paths['validation'], paths['held_out'], fpr_cap,
                            work / 'fusion-sweep.json')
     manifests = []
@@ -134,7 +140,7 @@ def fused_runs(work, runs, configs, fpr_cap):
                       metric: (held['metrics'][metric]['value'] - best['metrics'][metric]['value']
                                if held['metrics'][metric]['value'] is not None else None)
                       for metric in ('detection', 'false_positive')}}
-    summary = {'status': 'complete', 'fpr_cap': fpr_cap, 'dev': selected['dev'],
+    summary = {'status': 'complete', 'stages': names, 'fpr_cap': fpr_cap, 'dev': selected['dev'],
                'threshold': selected['threshold'], **comparison}
     for manifest in manifests:
         manifest['iteration_fusion'] = summary
@@ -148,7 +154,7 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
     required = {'sources', 'split', 'sample_cap', 'model', 'max_tokens',
                 'pipeline_version', 'rule_threshold', 'model_threshold'}
     if (not isinstance(config, dict) or not required <= set(config)
-            or set(config) - required - {'red_team', 'augment', 'fusion_fpr_cap'}):
+            or set(config) - required - {'red_team', 'augment', 'fusion_fpr_cap', 'activation_probe'}):
         raise ValueError('iteration config must contain exactly the documented fields')
     if type(config.get('augment', True)) is not bool:
         raise ValueError('augment must be boolean')
@@ -189,6 +195,31 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                 or not isinstance(source['inputs'], list) or not source['inputs']):
             raise ValueError('invalid source config')
         inputs.append([config_path.resolve().parent / path for path in source['inputs']])
+    probe_stages, probe_hashes = {}, {}
+    if 'activation_probe' in config:
+        probe = config['activation_probe']
+        if not isinstance(probe, dict) or set(probe) != {'version', 'threshold', 'dev', 'heldout'}:
+            raise ValueError('activation_probe must contain version, threshold, dev and heldout')
+        if not isinstance(probe['version'], str) or not probe['version'].strip():
+            raise ValueError('activation_probe version must be a nonempty string')
+        number(probe['threshold'], 'activation_probe threshold', 1)
+        for source_split, evaluation in [('dev', 'validation'), ('heldout', 'held_out')]:
+            cache = probe[source_split]
+            if (not isinstance(cache, dict) or set(cache) != {'cache', 'cache_sha256'}
+                    or any(not isinstance(value, str) or not value.strip()
+                           for value in cache.values())):
+                raise ValueError('activation_probe split requires cache and cache_sha256 strings')
+            path = config_path.resolve().parent / cache['cache']
+            probe_hashes[source_split] = digest(path) if path.exists() else None
+            if path.exists():
+                if probe_hashes[source_split] != cache['cache_sha256']:
+                    raise ValueError('activation_probe cache checksum mismatch')
+                probe_stages[evaluation] = cache | {
+                    'name': 'activation-probe', 'version': probe['version'],
+                    'threshold': probe['threshold'], 'cache': str(path.resolve())}
+        # The dev sweep and held-out replay must use the same stages.
+        if len(probe_stages) != 2:
+            probe_stages = {}
     # Include producer code so a changed loader, split, augmenter, rule or prompt refreshes outputs.
     identity = {'config': config, 'raw': [[digest(p) for p in paths] for paths in inputs],
                 'code': [digest(p) for p in (__file__, sources.__file__, split.__file__, augment.__file__,
@@ -196,6 +227,8 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                                             REPO / 'src/data_processing/run.py', sweep.__file__)],
                 'mappings': [digest(p) for p in sorted(
                     (Path(sources.__file__).parent / 'source_mappings').glob('*.json'))]}
+    if probe_hashes:
+        identity['activation_probe'] = probe_hashes
     if options['enabled']:
         identity['red_team'] = [digest(generate.__file__), digest(evaluate.__file__)]
         # Resolve paths after hashing the original config so its identity stays stable.
@@ -309,7 +342,7 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                 path = work / f'{stem}-run.json'
                 write_json(path, run_config)
                 manifests.append(replay(path, runs / run_id))
-        fusion = fused_runs(work, runs, run_configs, config.get('fusion_fpr_cap', 0.0002))
+        fusion = fused_runs(work, runs, run_configs, config.get('fusion_fpr_cap', 0.0002), probe_stages)
         manifests.extend(fusion.pop('manifests'))
         reports.mkdir(parents=True, exist_ok=True)
         report = reports / f"{state['timestamp'][:10]}-iteration-{state['iteration']:06d}.md"
@@ -322,6 +355,8 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                      + canonical_json(rate(red_team['approved'], red_team['generated'])) + '.')
         lines.append('Synthetic augmentation (added rows per split/channel): ' +
                      canonical_json(augmentation))
+        probe_status = 'available' if probe_stages else 'not available'
+        lines.append(f'probe: {probe_status}')
         for result in manifests:
             m = result['metrics']
             label = 'fused' if len(result['stages']) > 1 else result['stages'][0]['name']
@@ -331,7 +366,7 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
             sidecar = work / f"{result['run_id'].split('-', 2)[2]}-scores.invalid.json"
             if sidecar.exists():
                 lines.append(f"  Invalid (non-0/1, scored as attack) outputs: {load_json(sidecar)['invalid_outputs']}.")
-        lines.extend(['', '## Fused rules + Maya (same capped sample)', '',
+        lines.extend(['', '## Fused ' + ' + '.join(fusion['stages']) + ' (same capped sample)', '',
                       ('Weights selected on dev only. Held-out best single stage uses highest '
                        'detection, then lowest FPR, then name; this comparison is descriptive.'),
                       '', canonical_json(fusion),
@@ -348,7 +383,7 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
         result = state | {'identity_sha256': key, 'pipeline_version': config['pipeline_version'],
                           'runs': [m['run_id'] for m in manifests], 'sample_cap': config['sample_cap'],
                           'split_counts': split_counts, 'augmentation': augmentation,
-                          'red_team': red_team, 'fusion': fusion}
+                          'red_team': red_team, 'probe': probe_status, 'fusion': fusion}
         write_json(work / 'complete.json', result)
         return result
 

@@ -225,6 +225,11 @@ Labels are exploratory source labels (`evaluator_approved: false`); no model sco
 for unsampled rows. Full split counts and the cap are recorded in
 `runs/.iterations/*/complete.json`.
 
+Optional `activation_probe` settings add precomputed dev/heldout probe score caches to the same
+sampled fusion ([configuration](docs/pipeline.md#optional-iteration-activation-probe)). Both caches
+must exist; otherwise the report says `probe: not available` and fusion uses rules + Maya.
+The iteration never captures activations or trains a probe. Reports name the stages fused.
+
 An optional `red_team` section (see `iterate.example.json`) enables a capped generation and
 CPU evaluator round before splitting. It defaults off. Set `enabled: true`, `groups` (each request
 produces three variants and one hard negative), `max_tokens`, `carrier_chars`, `replay_only`,

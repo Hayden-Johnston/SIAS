@@ -441,3 +441,95 @@ def test_tiny_fusion_fixture_complementary_scores_and_missing_cache(tmp_path, mo
     with pytest.raises(ValueError, match='missing required cached score'):
         iterate.fused_runs(tmp_path, tmp_path / 'runs', configs, 0)
     assert all(p.read_bytes() == value for p, value in before.items())
+
+
+def configure_probe(setup):
+    # Build caches from synthetic full scoring splits, as an external probe export would.
+    run(setup)
+    work = next(setup[1].glob('runs/.iterations/*/state.json')).parent
+    probe = {'version': 'synthetic-probe-v1', 'threshold': 0.5}
+    for source_split, evaluation in [('dev', 'validation'), ('heldout', 'held_out')]:
+        cache = setup[0].parent / f'{source_split}-probe.jsonl'
+        iterate.atomic_write(cache, ''.join(iterate.canonical_json({
+            'id': row['id'], 'score': row['label'], 'latency_ms': 0}) + '\n'
+            for _, row in iterate.read_rows(work / f'{evaluation}-rules.jsonl')).encode())
+        probe[source_split] = {'cache': cache.name, 'cache_sha256': iterate.digest(cache)}
+    config = json.loads(setup[0].read_text())
+    config['activation_probe'] = probe
+    setup[0].write_text(json.dumps(config))
+    return probe
+
+
+def test_probe_fusion_from_full_cache_and_replay(setup, monkeypatch):
+    config = json.loads(setup[0].read_text())
+    config['split']['heldout_families'] = []
+    config['sample_cap'] = 25
+    setup[0].write_text(json.dumps(config))
+    configure_probe(setup)
+    result = run(setup)
+    assert result['probe'] == 'available'
+    assert result['fusion']['stages'] == ['rules', 'activation-probe', 'maya']
+    assert result['fusion']['dev']['weights'] == {'activation-probe': 0.5, 'maya': 0, 'rules': 0}
+    assert result['fusion']['fused_metrics']['detection']['value'] == 1
+    assert result['fusion']['fused_metrics']['false_positive']['value'] == 0
+    fused = json.loads((setup[1] / 'runs/iteration-000002-held_out-fused/manifest.json').read_text())
+    assert fused['records'] <= 25
+    assert fused['stages'][1]['name'] == 'activation-probe'
+    assert fused['stages'][1]['cached_latency_ms_total'] == 0
+    report = (setup[2] / f"{result['timestamp'][:10]}-iteration-000002.md").read_text()
+    assert 'probe: available' in report
+    assert 'Fused rules + activation-probe + maya (same capped sample)' in report
+    before = {p: p.read_bytes() for p in setup[1].rglob('*') if p.is_file()}
+    checkpoint = next(p for p in setup[1].rglob('complete.json')
+                      if json.loads(p.read_text())['iteration'] == 2)
+    checkpoint.unlink()
+    monkeypatch.setattr(iterate, 'Client', lambda *a, **k: pytest.fail('inference on replay'))
+    assert run(setup) == result
+    assert all(p.read_bytes() == value for p, value in before.items())
+
+
+@pytest.mark.parametrize('missing', [('dev',), ('heldout',), ('dev', 'heldout')])
+def test_missing_probe_cache_falls_back_and_availability_changes_identity(setup, missing):
+    probe = configure_probe(setup)
+    saved = {}
+    for name in missing:
+        path = setup[0].parent / probe[name]['cache']
+        saved[path] = path.read_bytes()
+        path.unlink()
+    result = run(setup)
+    assert result['probe'] == 'not available'
+    assert result['fusion']['stages'] == ['rules', 'maya']
+    report = (setup[2] / f"{result['timestamp'][:10]}-iteration-000002.md").read_text()
+    assert 'probe: not available' in report
+    assert 'Fused rules + maya' in report
+    for path, contents in saved.items():
+        path.write_bytes(contents)
+    available = run(setup)
+    assert available['iteration'] == 3
+    assert available['probe'] == 'available'
+    assert available['identity_sha256'] != result['identity_sha256']
+
+
+def test_corrupt_probe_cache_fails_before_inference(setup):
+    probe = configure_probe(setup)
+    (setup[0].parent / probe['dev']['cache']).write_text('')
+    FakeClient.calls = 0
+    with pytest.raises(ValueError, match='activation_probe cache checksum mismatch'):
+        run(setup)
+    assert FakeClient.calls == 0
+
+
+def test_incomplete_probe_cache_does_not_fabricate_scores(setup):
+    config = json.loads(setup[0].read_text())
+    config['split']['heldout_families'] = []
+    config['sample_cap'] = 25
+    setup[0].write_text(json.dumps(config))
+    probe = configure_probe(setup)
+    path = setup[0].parent / probe['dev']['cache']
+    path.write_text('')
+    config = json.loads(setup[0].read_text())
+    config['activation_probe']['dev']['cache_sha256'] = iterate.digest(path)
+    setup[0].write_text(json.dumps(config))
+    with pytest.raises(ValueError, match='missing required cached score'):
+        run(setup)
+    assert not list(setup[1].glob('runs/iteration-000002-*-fused/manifest.json'))

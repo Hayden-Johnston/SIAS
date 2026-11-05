@@ -219,3 +219,40 @@ placeholder, excluding capture and training. Put the returned `version` and `cac
 regular row stage in the [run config](runs.md), with `name: "activation-probe"`, a chosen threshold
 (for example 0.5), and the cache path; omit chunk settings. Replay needs no activation shards,
 ML extras or model server. Probe scores are not calibrated probabilities or location estimates.
+
+## Optional iteration activation probe
+
+Add `activation_probe` to the local `ops/iterate.py` config to include existing probe exports:
+
+```json
+"activation_probe": {
+  "version": "REPLACE_WITH_PROBE_VERSION",
+  "threshold": 0.5,
+  "dev": {
+    "cache": "caches/dev-probe.jsonl",
+    "cache_sha256": "REPLACE_WITH_DEV_CACHE_SHA256"
+  },
+  "heldout": {
+    "cache": "caches/heldout-probe.jsonl",
+    "cache_sha256": "REPLACE_WITH_HELDOUT_CACHE_SHA256"
+  }
+}
+```
+
+Paths resolve relative to the iteration config. Use caches from the same frozen probe (the shared
+`version`) for the exact scoring splits, including augmentation when enabled. Full-split caches
+are filtered to the deterministic Maya sample; caches containing just those sampled IDs also work.
+Every sampled ID needs a score. Present files with incorrect checksums, invalid sampled entries or
+missing sampled scores fail; no scores are fabricated or inferred. Extra rows outside the sample
+are ignored. Export caches separately with `data_processing.probe`; the iteration never captures
+activations or trains a probe and needs no activation extras to replay.
+
+Both files must exist to add `activation-probe`: dev weight selection and held-out evaluation
+require identical stages. If the setting is omitted or either file is absent, rules + Maya fusion
+continues and the report says `probe: not available`. Configured cache contents and availability
+participate in iteration identity, so adding a previously missing cache creates a new iteration.
+The report and completion manifest name the fusion stages and record probe availability.
+Fusion still uses the existing dev-only weight sweep and the same capped samples; full-split
+rules metrics remain separate. Zero probe latency is unmeasured and excludes capture/training.
+Probe training on dev makes dev probe metrics in-sample; this integration does not change that
+limitation or establish held-out detection quality.

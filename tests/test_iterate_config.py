@@ -193,3 +193,18 @@ def test_second_flock_fails(tmp_path):
         fcntl.flock(lock1, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with pytest.raises(BlockingIOError), lock_path.open('a') as lock2:
             fcntl.flock(lock2, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+@pytest.mark.parametrize('probe', [
+    None, {},
+    {'version': '', 'threshold': 0.5, 'dev': {}, 'heldout': {}},
+    {'version': 'v1', 'threshold': True, 'dev': {}, 'heldout': {}},
+    {'version': 'v1', 'threshold': 0.5, 'dev': 'cache.jsonl', 'heldout': {}},
+    {'version': 'v1', 'threshold': 0.5, 'dev': {'cache': '', 'cache_sha256': 'hash'}, 'heldout': {}},
+])
+def test_invalid_probe_config_before_inference(tmp_path, probe):
+    config = valid_config()
+    config['activation_probe'] = probe
+    path = write_config(tmp_path, config)
+    with pytest.raises(ValueError, match='activation_probe'):
+        iterate.iterate(path, data=tmp_path / 'data', reports=tmp_path / 'reports')
