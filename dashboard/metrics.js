@@ -171,3 +171,21 @@ function renderMetrics(runs) {
   select.onchange = () => showRun(runs[Number(select.value)]);
   showRun(runs[Number(select.value)]);
 }
+
+function renderAblation(ablation) {
+  const table = document.querySelector('#ablation-fits'); table.replaceChildren();
+  document.querySelector('#no-ablation').textContent = ablation ? '' : 'No valid stage-ablation.json in the runs directory';
+  document.querySelector('#ablation-summary').textContent = ablation ?
+    `Held-out results · evaluator approved: ${ablation.evaluator_approved ? 'yes' : 'no'}` : '';
+  if (!ablation) return;
+  const deltaLabel = value => value == null ? '—' : `${value > 0 ? '+' : ''}${(value * 100).toFixed(5)} pp`;
+  const fits = [['Full', {metrics: ablation.full}],
+    ...Object.entries(ablation.removed_stages).map(([name, fit]) => [`Without ${name}`, fit])];
+  for (const [name, fit] of fits) {
+    const row = el('tr'), metrics = fit.metrics;
+    for (const value of [name, metrics.tp, metrics.fn, metrics.fp, metrics.tn,
+      rateLabel(metrics.detection), rateLabel(metrics.false_positive),
+      deltaLabel(fit.delta_vs_full?.detection), deltaLabel(fit.delta_vs_full?.false_positive)]) row.append(el('td', value));
+    table.append(row);
+  }
+}

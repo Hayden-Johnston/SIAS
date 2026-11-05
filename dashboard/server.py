@@ -19,36 +19,39 @@ PAGE = Path(__file__).with_name("index.html")
 RUNS = Path("/mnt/storage/llm_security/runs")
 
 
+def text(value):
+    if not isinstance(value, str):
+        raise TypeError("expected text")
+    return value
+
+
+def number(value, integer=False, nullable=False):
+    if value is None and nullable:
+        return None
+    if (type(value) not in ((int,) if integer else (int, float))
+            or not math.isfinite(value) or value < 0):
+        raise ValueError("expected nonnegative number")
+    return value
+
+
+def rate(value):
+    n = number(value["n"], integer=True)
+    bounds = value["ci95"]
+    if not isinstance(bounds, list) or len(bounds) != 2:
+        raise ValueError("expected interval")
+    estimate, low, high = [number(v, nullable=n == 0)
+                           for v in (value["value"], *bounds)]
+    # Wilson endpoints can round just inside a 0% or 100% point estimate.
+    if n and not (0 <= estimate <= 1 and 0 <= low <= high <= 1):
+        raise ValueError("invalid interval")
+    if not n and (estimate, low, high) != (None, None, None):
+        raise ValueError("empty rate must be undefined")
+    return {"value": estimate, "n": n, "ci95": [low, high],
+            "method": text(value["method"])}
+
+
 def manifest_fields(record):
     """Project only documented aggregate fields; reject partial/unsupported manifests."""
-    def text(value):
-        if not isinstance(value, str):
-            raise TypeError("expected text")
-        return value
-
-    def number(value, integer=False, nullable=False):
-        if value is None and nullable:
-            return None
-        if (type(value) not in ((int,) if integer else (int, float))
-                or not math.isfinite(value) or value < 0):
-            raise ValueError("expected nonnegative number")
-        return value
-
-    def rate(value):
-        n = number(value["n"], integer=True)
-        bounds = value["ci95"]
-        if not isinstance(bounds, list) or len(bounds) != 2:
-            raise ValueError("expected interval")
-        estimate, low, high = [number(v, nullable=n == 0)
-                               for v in (value["value"], *bounds)]
-        # Wilson endpoints can round just inside a 0% or 100% point estimate.
-        if n and not (0 <= estimate <= 1 and 0 <= low <= high <= 1):
-            raise ValueError("invalid interval")
-        if not n and (estimate, low, high) != (None, None, None):
-            raise ValueError("empty rate must be undefined")
-        return {"value": estimate, "n": n, "ci95": [low, high],
-                "method": text(value["method"])}
-
     if record["schema_version"] != 1 or record["status"] != "complete":
         raise ValueError("unsupported or incomplete manifest")
     result = {key: text(record[key]) for key in
@@ -106,6 +109,38 @@ def run_metrics(runs):
         except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
             continue  # partial writes and unsupported manifests do not break the board
     return sorted(result, key=lambda run: (run["timestamp"], run["run_id"]), reverse=True)
+
+
+def stage_ablation(runs):
+    """Read only the conventional aggregate ablation output, never its inputs."""
+    path = runs / "stage-ablation.json"
+    if path.is_symlink():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record["schema_version"] != 1:
+            raise ValueError("unsupported ablation")
+
+        def choice(value):
+            metrics = value["held_out_metrics"]
+            return {**{key: number(metrics[key], integer=True)
+                       for key in ("tp", "fp", "fn", "tn")},
+                    **{key: rate(metrics[key]) for key in ("detection", "false_positive")}}
+
+        removed = {}
+        for name, value in sorted(record["removed_stages"].items()):
+            deltas = {}
+            for key in ("detection", "false_positive"):
+                delta = value["delta_vs_full"][key]
+                if delta is not None and (type(delta) not in (int, float)
+                                          or not math.isfinite(delta) or not -1 <= delta <= 1):
+                    raise ValueError("invalid delta")
+                deltas[key] = delta
+            removed[text(name)] = {"metrics": choice(value), "delta_vs_full": deltas}
+        return {"full": choice(record["full"]), "removed_stages": removed,
+                "evaluator_approved": record["held_out"]["evaluator_approved"] is True}
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
+        return None  # absent, partial or unsupported output leaves an empty view
 
 
 def run_fields(record):
@@ -312,6 +347,7 @@ def state(board, runs=RUNS, current=None, repo=PAGE.parent.parent, hours=48):
             "running": running, "history": history[::-1], "metrics": run_metrics(runs),
             "activity": activity(history, running, titles, current),
             "servers": server_activity(board, current),
+            "ablation": stage_ablation(runs),
             "alerts": alerts(board, ts, logs, history, running, current),
             "updates": updates(logs, repo, current, hours)}
 

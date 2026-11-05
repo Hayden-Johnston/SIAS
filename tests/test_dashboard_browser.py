@@ -277,3 +277,47 @@ def test_latest_recall_page(endpoint):
             assert page.locator('#no-recall').inner_text() == 'No technique or channel metrics in this run'
         finally:
             browser.close()
+
+
+def test_stage_ablation_page(endpoint):
+    import json
+
+    from test_dashboard_ablation import sample_ablation
+
+    root, url = endpoint
+    with playwright.sync_playwright() as browser_tools:
+        browser = browser_tools.chromium.launch(args=['--no-sandbox'])
+        page = browser.new_page()
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        try:
+            page.goto(url + '/#ablation')
+            page.wait_for_function("document.querySelector('#no-ablation').textContent.startsWith('No valid')")
+            assert page.locator('[data-page="ablation"]').is_visible()
+            runs = root / 'runs'
+            runs.mkdir()
+            path = runs / 'stage-ablation.json'
+            record = sample_ablation()
+            path.write_text(json.dumps(record))
+            page.evaluate('refresh()')
+            page.wait_for_selector('#ablation-fits tr')
+            assert page.locator('#ablation-fits tr').count() == 2
+            assert page.locator('#ablation-fits tr').nth(1).locator('td').all_text_contents() == [
+                'Without rules', '1', '1', '0', '2',
+                '50.00000% [9.45312%–90.54688%]; n=2',
+                '0.00000% [0.00000%–65.76198%]; n=2', '-50.00000 pp', '-50.00000 pp']
+            record['removed_stages']['<img src=x>'] = record['removed_stages'].pop('rules')
+            record['full']['held_out_metrics']['detection'] = rate(0, 0)
+            record['removed_stages']['<img src=x>']['delta_vs_full']['detection'] = None
+            path.write_text(json.dumps(record))
+            page.reload()
+            page.wait_for_function("document.querySelector('#ablation-fits').textContent.includes('Without <img')")
+            assert page.locator('#ablation-fits img').count() == 0
+            assert page.locator('#ablation-fits tr').first.locator('td').nth(5).inner_text() == '— [—–—]; n=0'
+            assert page.locator('#ablation-fits tr').nth(1).locator('td').nth(7).inner_text() == '—'
+            path.unlink()
+            page.evaluate('refresh()')
+            page.wait_for_function("document.querySelectorAll('#ablation-fits tr').length === 0")
+            assert not errors, errors
+        finally:
+            browser.close()

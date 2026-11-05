@@ -83,8 +83,8 @@ must be available). The regular suite tests synthetic manifest projection and HT
 ## Pages and agent activity
 
 The persistent navigation opens `#board` (tickets), `#activity` (agent timeline and history),
-`#runs` (manifest history and selected aggregate report), `#metrics` (improvement charts), and
-`#recall` (latest technique/channel detection).
+`#runs` (manifest history and selected aggregate report), `#metrics` (improvement charts),
+`#recall` (latest technique/channel detection), and `#ablation` (stage removal comparisons).
 Reloading a deep link preserves the view. All displayed timestamps use America/Los_Angeles with
 PST/PDT labels, independent of browser and server timezone; files and API timestamps keep their
 recorded timezone.
@@ -157,3 +157,18 @@ the next sample or ten minutes, whichever comes first, and merge when status/mod
 Longer gaps remain blank and the current state becomes unknown after ten minutes. This is sampled
 history, not continuous uptime measurement. Partial/invalid records and future samples are skipped.
 The append-only history has no automatic retention policy.
+
+## Stage ablation
+
+The `#ablation` page reads `stage-ablation.json` directly from the `--runs` directory,
+matching the output example in [pipeline.md](pipeline.md#replay-only-stage-ablation).
+It shows the full fit and each leave-one-stage-out fit: held-out TP/FN/FP/TN counts,
+detection and FPR with denominators and 95% Wilson intervals, and deltas versus full
+in percentage points. Undefined rates/deltas display as a dash; full has no delta.
+Weights are refitted on dev for each removal. Deltas describe the refitted system and
+are point estimates without confidence intervals. Held-out results are for reporting,
+not repeated tuning; the inherited held-out evaluator approval flag remains visible.
+
+The file refreshes with the rest of the dashboard. Missing, malformed, unsupported or
+symlinked files show an explicit empty state. The endpoint projects only displayed
+aggregate fields; it never follows input references or opens datasets, caches or payloads.

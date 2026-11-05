@@ -26,7 +26,7 @@ a { color: #0072b2; } .swatch { display: inline-block; width: .8rem; height: .8r
 @media (max-width: 450px) { #board { grid-template-columns: 1fr; } }
 </style>
 <header><h1>llm-security</h1><button id="theme" type="button">Toggle theme</button></header>
-<nav aria-label="Views"><a href="#updates">Updates</a><a href="#alerts">Alerts</a><a href="#board">Board</a><a href="#activity">Activity</a><a href="#runs">Runs</a><a href="#metrics">Metrics</a><a href="#recall">Recall</a></nav>
+<nav aria-label="Views"><a href="#updates">Updates</a><a href="#alerts">Alerts</a><a href="#board">Board</a><a href="#activity">Activity</a><a href="#runs">Runs</a><a href="#metrics">Metrics</a><a href="#recall">Recall</a><a href="#ablation">Ablation</a></nav>
 <aside id="alert-banner" hidden><a href="#alerts" id="alert-count"></a><div id="alert-top"></div></aside>
 <p id="refresh" class="muted" role="status">Loading board…</p>
 <main data-page="updates"><section><h2>Updates</h2><p id="updates-window" class="muted"></p><div id="updates"></div><button id="load-more">Load more · 48 h</button></section></main>
@@ -62,6 +62,11 @@ a { color: #0072b2; } .swatch { display: inline-block; width: .8rem; height: .8r
 <p class="muted">Latest complete run · fused verdicts · detection is recall among attacks. Techniques overlap. Small sample flags use attack counts (n&lt;20); benign-only channels have undefined recall. Rates apply to this dataset and split.</p>
 <p id="no-recall" class="muted"></p><div class="table-wrap"><table><thead><tr><th>Slice</th><th>Value</th><th>Attacks</th><th>Detected</th><th>Missed</th><th>Detection (95% Wilson CI; n)</th><th>Sample</th></tr></thead><tbody id="recall-slices"></tbody></table></div>
 </section></main>
+<main data-page="ablation" hidden><section><h2>Stage ablation</h2>
+<p id="ablation-summary" class="muted"></p>
+<p class="muted">Weights refitted on dev after removing each stage. Held-out deltas are removed-stage fit minus full fit, in percentage points (pp); they are point estimates, without confidence intervals. Results apply only to the scored rows and inherited labels. Use held-out results for reporting, not repeated tuning.</p>
+<p id="no-ablation" class="muted"></p><div class="table-wrap"><table><thead><tr><th>Fit</th><th>TP</th><th>FN</th><th>FP</th><th>TN</th><th>Detection (95% Wilson CI; n)</th><th>False positives (95% Wilson CI; n)</th><th>Δ detection (pp)</th><th>Δ FPR (pp)</th></tr></thead><tbody id="ablation-fits"></tbody></table></div>
+</section></main>
 <script src="/metrics.js"></script>
 <script src="/activity.js"></script>
 <script>
@@ -72,7 +77,7 @@ document.querySelector('#theme').onclick = () => {
 };
 function route() {
   const hash = location.hash.slice(1) || 'updates';
-  const view = hash === 'run-report' ? 'runs' : ['updates', 'alerts', 'board', 'activity', 'runs', 'metrics', 'recall'].includes(hash) ? hash : 'updates';
+  const view = hash === 'run-report' ? 'runs' : ['updates', 'alerts', 'board', 'activity', 'runs', 'metrics', 'recall', 'ablation'].includes(hash) ? hash : 'updates';
   for (const page of document.querySelectorAll('[data-page]')) page.hidden = page.dataset.page !== view;
   for (const link of document.querySelectorAll('nav a')) {
     if (link.hash === `#${view}`) link.setAttribute('aria-current', 'page');
@@ -148,6 +153,7 @@ async function refresh() {
     document.querySelector('#no-history').textContent = data.history.length ? '' : 'No completed agent runs';
     renderNews(data);
     renderMetrics(data.metrics);
+    renderAblation(data.ablation);
     serverData = data.servers;
     renderActivity(data.activity);
     document.querySelector('#refresh').textContent = `Updated ${pacific(new Date())} · refreshes every 15 seconds`;
