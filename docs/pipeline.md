@@ -160,6 +160,30 @@ deltas (chosen minus all-ones). Undefined held-out rates and deltas are null. Re
 inputs produce identical output. Split declarations do not prove family/group separation: use
 properly separated, approved splits, and do not tune by repeatedly inspecting held-out results.
 
+## Held-out miss analysis
+
+```sh
+uv run python -m data_processing.misses runs/heldout/manifest.json runs/heldout/misses.json
+```
+
+This replay-only script reads a complete `held_out` run manifest and its sibling
+`results.jsonl`, verifying the results checksum and record count before writing. It needs
+no dataset, model, network or server operations. Misses are attack rows whose cached
+`fused_score` is strictly below the manifest's fusion threshold; equality is detected.
+Weights and chunk maxima are already reflected in that score.
+
+The atomic JSON output and printed JSON contain sorted missed `ids`, unique total
+`missed`, `attacks` and `records` counts, and `groups` of `{technique, channel, count, ids}`.
+Multi-technique misses appear in each matching group, so group counts can overlap;
+misses with no techniques appear only in the global IDs/count. Output copies no payload
+text, messages, model responses or paths. Manifest/results checksums, threshold and the
+evaluator approval flag record provenance. Identical inputs produce identical bytes;
+invalid inputs preserve an existing output. Use one writer with frozen run inputs.
+
+The held-out declaration and approval flag are inherited, not independently verified.
+IDs describe only rows scored by that run, which may be a capped sample. Use this for
+reporting gaps; repeatedly tuning against these IDs compromises held-out measurement.
+
 ## Statistics
 
 Report confidence intervals and sample sizes with every rate, and state the attack distribution the
