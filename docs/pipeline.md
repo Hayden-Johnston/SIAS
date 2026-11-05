@@ -135,6 +135,31 @@ chunk location and cached latency now cover all rows; latency sums describe cach
 not an early-exit cascade or replay runtime. An empty conversation has no chunks, stage score 0,
 zero cached latency and null location. Fusion never compares chunk coordinates across stages.
 
+## Replay-only fusion weight sweep
+
+```sh
+uv run python -m data_processing.sweep data/dev-run.json data/heldout-run.json \
+  --fpr-cap 0.0002 --output runs/fusion-sweep.json
+```
+
+Supply normal run configs with multiple stages: dev uses `evaluation_split: "validation"`,
+held-out uses `"held_out"`. Stage names, versions, thresholds and chunk settings must match,
+as must the fusion threshold (default 0.5); cache paths/checksums differ by split. Existing
+fusion weights are ignored. Complete caches are required, with no inference or server operations.
+
+The script tries `{0, 0.5, 1}` per stage on dev only, maximizing observed detection subject to
+observed FPR <= `--fpr-cap` (a fraction, not a percentage or CI upper bound). Ties prefer the
+lowest total weight, then lexicographically lower weights in sorted stage-name order. Dev must
+contain attacks and benign rows; no feasible choice fails without replacing output. Grid size
+is `3 ** stage_count`, so keep the stage count small.
+
+Only after selection does it read held-out inputs and evaluate the chosen weights once, plus an
+all-ones baseline. Printed JSON and optional atomic output contain dev weights/metrics, input
+identities, approval flags, held-out confusion counts/rates with 95% Wilson intervals, and rate
+deltas (chosen minus all-ones). Undefined held-out rates and deltas are null. Repeated identical
+inputs produce identical output. Split declarations do not prove family/group separation: use
+properly separated, approved splits, and do not tune by repeatedly inspecting held-out results.
+
 ## Statistics
 
 Report confidence intervals and sample sizes with every rate, and state the attack distribution the
