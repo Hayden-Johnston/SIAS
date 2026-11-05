@@ -46,3 +46,35 @@ def test_thresholds_and_empty_manifest(tmp_path):
     result = coverage.report([manifest])
     assert "| empty | 0 | no |" in result
     assert "| empty |" + " 0 GAP |" * 7 in result
+
+
+def test_cell_boundaries():
+    assert coverage.cell(2) == "2 LOW"
+    assert coverage.cell(10) == "10 LOW"
+    assert coverage.cell(18) == "18 LOW"
+    assert coverage.cell(21) == "21"
+    assert coverage.cell(100) == "100"
+
+
+def test_report_no_manifests():
+    result = coverage.report([])
+    assert "# Dataset taxonomy coverage" in result
+    assert "| Dataset | Attack rows | Evaluator approved |" in result
+    # No data rows beyond the table header
+    for line in result.splitlines():
+        if line.startswith("|") and "Dataset" not in line and "---" not in line:
+            raise AssertionError(f"unexpected data row: {line}")
+
+
+def test_manifest_no_attack_rows(tmp_path):
+    manifest = tmp_path / "no_attacks.json"
+    manifest.write_text(json.dumps({
+        "labels": {"0": 50, "1": 0},
+        "channels": {"direct": 50},
+        "techniques": {},
+        "evaluator_approved": True,
+    }))
+    result = coverage.report([manifest])
+    assert "| no_attacks | 0 | yes |" in result
+    # All channel/technique cells are 0 GAP (benign-only, no attacks)
+    assert "| no_attacks |" + " 0 GAP |" * 7 in result
