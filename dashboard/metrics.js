@@ -88,7 +88,24 @@ function showRun(run) {
   }
 }
 
+function renderRecall(run) {
+  document.querySelector('#recall-summary').textContent = run ?
+    `${run.run_id} · ${pacific(run.timestamp)} · ${run.evaluation_split} · ${run.pipeline_version}` : '';
+  const table = document.querySelector('#recall-slices'); table.replaceChildren();
+  for (const field of ['technique', 'channel']) {
+    for (const [name, slice] of Object.entries(run?.slices?.[`by_${field}`] ?? {})) {
+      const row = el('tr');
+      for (const value of [field, name, slice.detection.n, slice.tp, slice.fn,
+        rateLabel(slice.detection), slice.detection.n < 20 ? 'small sample (n<20)' : '']) row.append(el('td', value));
+      table.append(row);
+    }
+  }
+  document.querySelector('#no-recall').textContent = !run ? 'No complete run manifests' :
+    table.children.length ? '' : 'No technique or channel metrics in this run';
+}
+
 function renderMetrics(runs) {
+  renderRecall(runs[0]);
   const sliceSelect = document.querySelector('#slice-run');
   const previousSlice = sliceSelect.selectedOptions[0]?.textContent;
   sliceSelect.replaceChildren();

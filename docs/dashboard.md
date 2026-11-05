@@ -51,6 +51,11 @@ and attack family. It shows total slice counts, each rate's denominator and 95% 
 and flags slices with fewer than 20 rows. Technique slices overlap and exclude benign rows;
 undefined false-positive rates stay undefined. Older manifests show no slice metrics until replayed.
 
+The `#recall` page follows the latest complete run on every refresh and shows technique and channel
+attack counts, detected/missed counts and detection with 95% Wilson intervals. Its n<20 flag uses
+the attack denominator, including in channels with benign rows. Benign-only channels have undefined
+recall. Empty directories and older manifests without slices show an explicit empty message.
+
 Use `--runs /path/to/runs` to change the default `/mnt/storage/llm_security/runs`.
 Each immediate child directory may contain one `manifest.json` from `data_processing.run`.
 Only complete schema-version-1 manifests are shown, newest first; malformed or unsupported files
@@ -78,7 +83,8 @@ must be available). The regular suite tests synthetic manifest projection and HT
 ## Pages and agent activity
 
 The persistent navigation opens `#board` (tickets), `#activity` (agent timeline and history),
-`#runs` (manifest history and selected aggregate report), and `#metrics` (improvement charts).
+`#runs` (manifest history and selected aggregate report), `#metrics` (improvement charts), and
+`#recall` (latest technique/channel detection).
 Reloading a deep link preserves the view. All displayed timestamps use America/Los_Angeles with
 PST/PDT labels, independent of browser and server timezone; files and API timestamps keep their
 recorded timezone.

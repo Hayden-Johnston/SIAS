@@ -195,6 +195,42 @@ def test_slice_projection_and_older_manifests(tmp_path):
     assert "DO NOT EXPOSE" not in json.dumps(result)
 
 
+def test_latest_recall_manifest_counts_and_intervals(tmp_path, monkeypatch):
+    from data_processing.run import rate, sliced_metrics
+
+    assert dashboard.run_metrics(tmp_path) == []
+    write_manifest(tmp_path, 0)
+    record = synthetic_manifest(1)
+    rows = [
+        {"label": 1, "detected": index < 14, "channel": "direct",
+         "length_bucket": "0-4096", "techniques": ["encoding"],
+         "attack_family": "synthetic-family"}
+        for index in range(20)
+    ]
+    rows.append({**rows[0], "channel": "email", "detected": False,
+                 "techniques": ["novel"]})
+    rows.append({**rows[0], "channel": "document", "label": 0, "techniques": []})
+    record["slices"] = sliced_metrics(rows)
+    record["slices"]["by_channel"]["direct"]["text"] = "DO NOT EXPOSE"
+    write_manifest(tmp_path, 1, record)
+    read_text = Path.read_text
+
+    def only_manifests(path, *args, **kwargs):
+        assert path.name == "manifest.json"
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", only_manifests)
+    latest = dashboard.run_metrics(tmp_path)[0]
+    assert latest["run_id"] == "run-1"
+    technique = latest["slices"]["by_technique"]["encoding"]
+    assert (technique["tp"], technique["fn"]) == (14, 6)
+    assert technique["detection"] == rate(14, 20)
+    assert technique["small_sample"] is False
+    assert latest["slices"]["by_channel"]["email"]["detection"] == rate(0, 1)
+    assert latest["slices"]["by_channel"]["document"]["detection"] == rate(0, 0)
+    assert "DO NOT EXPOSE" not in json.dumps(latest)
+
+
 def test_configured_runs_http_and_static_assets(tmp_path):
     runs = tmp_path / "configured-runs"
     for index in range(3):
@@ -209,7 +245,7 @@ def test_configured_runs_http_and_static_assets(tmp_path):
         assert len(state["metrics"]) == 3
         with urlopen(base) as response:
             page = response.read().decode()
-        for name in ("metrics-history", "detection-chart", "fp-chart", "selected-run", "stages"):
+        for name in ("metrics-history", "detection-chart", "fp-chart", "selected-run", "stages", "recall-summary", "recall-slices"):
             assert f'id="{name}"' in page
         with urlopen(base + "/metrics.js") as response:
             assert response.headers["Content-Type"] == "text/javascript; charset=utf-8"

@@ -26,7 +26,7 @@ a { color: #0072b2; } .swatch { display: inline-block; width: .8rem; height: .8r
 @media (max-width: 450px) { #board { grid-template-columns: 1fr; } }
 </style>
 <header><h1>llm-security</h1><button id="theme" type="button">Toggle theme</button></header>
-<nav aria-label="Views"><a href="#updates">Updates</a><a href="#alerts">Alerts</a><a href="#board">Board</a><a href="#activity">Activity</a><a href="#runs">Runs</a><a href="#metrics">Metrics</a></nav>
+<nav aria-label="Views"><a href="#updates">Updates</a><a href="#alerts">Alerts</a><a href="#board">Board</a><a href="#activity">Activity</a><a href="#runs">Runs</a><a href="#metrics">Metrics</a><a href="#recall">Recall</a></nav>
 <aside id="alert-banner" hidden><a href="#alerts" id="alert-count"></a><div id="alert-top"></div></aside>
 <p id="refresh" class="muted" role="status">Loading board…</p>
 <main data-page="updates"><section><h2>Updates</h2><p id="updates-window" class="muted"></p><div id="updates"></div><button id="load-more">Load more · 48 h</button></section></main>
@@ -57,6 +57,11 @@ a { color: #0072b2; } .swatch { display: inline-block; width: .8rem; height: .8r
 <p class="muted">Each technique below has zero dev rows. Multi-technique rows contribute to each matching technique, including rows that also use seen techniques. This is distinct from the taxonomy label “novel”.</p>
 <p id="no-novel-techniques" class="muted"></p><div class="table-wrap"><table><thead><tr><th>Technique</th><th>Records</th><th>Detection (95% CI; n)</th></tr></thead><tbody id="novel-techniques"></tbody></table></div></section>
 </main>
+<main data-page="recall" hidden><section><h2>Recall by technique and channel</h2>
+<p id="recall-summary" class="muted"></p>
+<p class="muted">Latest complete run · fused verdicts · detection is recall among attacks. Techniques overlap. Small sample flags use attack counts (n&lt;20); benign-only channels have undefined recall. Rates apply to this dataset and split.</p>
+<p id="no-recall" class="muted"></p><div class="table-wrap"><table><thead><tr><th>Slice</th><th>Value</th><th>Attacks</th><th>Detected</th><th>Missed</th><th>Detection (95% Wilson CI; n)</th><th>Sample</th></tr></thead><tbody id="recall-slices"></tbody></table></div>
+</section></main>
 <script src="/metrics.js"></script>
 <script src="/activity.js"></script>
 <script>
@@ -67,7 +72,7 @@ document.querySelector('#theme').onclick = () => {
 };
 function route() {
   const hash = location.hash.slice(1) || 'updates';
-  const view = hash === 'run-report' ? 'runs' : ['updates', 'alerts', 'board', 'activity', 'runs', 'metrics'].includes(hash) ? hash : 'updates';
+  const view = hash === 'run-report' ? 'runs' : ['updates', 'alerts', 'board', 'activity', 'runs', 'metrics', 'recall'].includes(hash) ? hash : 'updates';
   for (const page of document.querySelectorAll('[data-page]')) page.hidden = page.dataset.page !== view;
   for (const link of document.querySelectorAll('nav a')) {
     if (link.hash === `#${view}`) link.setAttribute('aria-current', 'page');

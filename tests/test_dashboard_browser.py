@@ -123,7 +123,7 @@ def test_pages_and_activity(endpoint):
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         try:
-            for view in ('updates', 'alerts', 'board', 'activity', 'runs', 'metrics'):
+            for view in ('updates', 'alerts', 'board', 'activity', 'runs', 'metrics', 'recall'):
                 page.goto(f'{url}/#{view}')
                 page.wait_for_function("document.querySelector('#refresh').textContent.startsWith('Updated')")
                 assert page.locator(f'[data-page="{view}"]').is_visible()
@@ -243,5 +243,37 @@ def test_server_activity_chart(endpoint):
             page.locator('#live').click()
             assert page.locator('#server-chart rect').count() == 2
             assert not errors, errors
+        finally:
+            browser.close()
+
+
+def test_latest_recall_page(endpoint):
+    from data_processing.run import sliced_metrics
+
+    root, url = endpoint
+    with playwright.sync_playwright() as browser_tools:
+        browser = browser_tools.chromium.launch(args=['--no-sandbox'])
+        page = browser.new_page()
+        try:
+            page.goto(url + '/#recall')
+            page.wait_for_function("document.querySelector('#no-recall').textContent === 'No complete run manifests'")
+            record = synthetic_manifest()
+            record['slices'] = sliced_metrics([
+                {'label': 1, 'detected': False, 'channel': 'direct',
+                 'length_bucket': '0-4096', 'techniques': ['encoding'],
+                 'attack_family': 'synthetic-family'},
+            ])
+            write_manifest(root / 'runs', record=record)
+            page.evaluate('refresh()')
+            page.wait_for_selector('#recall-slices tr')
+            assert page.locator('#recall-slices tr').count() == 2
+            assert page.locator('#recall-slices tr').first.locator('td').all_text_contents() == [
+                'technique', 'encoding', '1', '0', '1',
+                '0.00000% [0.00000%–79.34507%]; n=1', 'small sample (n<20)']
+            write_manifest(root / 'runs', 1)
+            page.evaluate('refresh()')
+            page.wait_for_function("document.querySelector('#recall-summary').textContent.startsWith('run-1')")
+            assert page.locator('#recall-slices tr').count() == 0
+            assert page.locator('#no-recall').inner_text() == 'No technique or channel metrics in this run'
         finally:
             browser.close()

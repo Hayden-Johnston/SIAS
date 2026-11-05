@@ -72,6 +72,7 @@ def manifest_fields(record):
             text(name): {
                 "n": number(value["n"], integer=True),
                 "small_sample": number(value["n"], integer=True) < 20,
+                **{key: number(value[key], integer=True) for key in ("tp", "fn")},
                 **{key: rate(value[key]) for key in ("detection", "false_positive")},
             }
             for name, value in record.get("slices", {}).get("by_" + field, {}).items()
