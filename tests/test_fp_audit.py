@@ -92,6 +92,28 @@ def test_input_overwrite_rejected(inputs):
         assert target.read_bytes() == before
 
 
+def test_single_channel(tmp_path):
+    path = config(tmp_path, "validation", [[1, 1, 0.75, 0.74], [1, 1, 0, 1]])
+    data = json.loads(path.read_text())
+    data["stages"][0].update(name="rules", threshold=0.75)
+    update(path, stages=data["stages"], fusion={"threshold": 0.5, "weights": {"rules": 0}})
+    dataset = tmp_path / "dataset.jsonl"
+    rows = [json.loads(line) for line in dataset.read_text().splitlines()]
+    for row in rows:
+        if row["label"] == 0:
+            row.update(channel="email", source="first")
+    dataset.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    update(tmp_path / "manifest.json", output_sha256=run.digest(dataset))
+    split = tmp_path / "split_manifest.json"
+    split.write_text(json.dumps({"schema_version": 2, "splits": {
+        "dev": {"records": 4, "output_sha256": run.digest(dataset)}}}))
+    output = tmp_path / "out" / "fp.json"
+    result = fp_audit.audit(path, split, output)
+    for name in ("rules", "fused"):
+        assert set(result[name]["by_channel"]) == {"email"}
+        assert result[name]["by_channel"]["email"]["benign"] == 2
+
+
 def test_heldout_chunks_zero_threshold_and_no_benign(inputs):
     path, split, _output = inputs
     data = json.loads(path.read_text())
