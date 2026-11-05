@@ -40,6 +40,27 @@ def test_rejects_unknown_status(board):
         dispatch.set_field("1", "status", "wip")
 
 
+def test_new_set_log_list_roundtrip(board):
+    dispatch.new("pi", "3", "Test title", [])
+    dispatch.set_field("1", "status", "doing")
+    dispatch.log("1", "pi", "working on it")
+    # list
+    ts = dispatch.tickets()
+    assert len(ts) == 1
+    assert (ts[0]["id"], ts[0]["status"], ts[0]["owner"], ts[0]["title"], ts[0]["priority"]) == (
+        "0001", "doing", "pi", "Test title", "3")
+    # file contents
+    content = (board / "0001-test-title.md").read_text()
+    assert "status: doing" in content
+    assert "pi: working on it" in content
+    # unknown id
+    with pytest.raises(SystemExit):
+        dispatch.find("9999")
+    # unknown status
+    with pytest.raises(SystemExit):
+        dispatch.set_field("1", "status", "wip")
+
+
 def test_dotenv(tmp_path, monkeypatch):
     monkeypatch.setattr(dispatch, "REPO", tmp_path)
     (tmp_path / ".env").write_text("A=1\nB = two\nno_equals_here\n")
