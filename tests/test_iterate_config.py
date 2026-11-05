@@ -208,3 +208,57 @@ def test_invalid_probe_config_before_inference(tmp_path, probe):
     path = write_config(tmp_path, config)
     with pytest.raises(ValueError, match='activation_probe'):
         iterate.iterate(path, data=tmp_path / 'data', reports=tmp_path / 'reports')
+
+
+@pytest.mark.parametrize('cpu', [
+    None, {},
+    {'version': '', 'threshold': 0.5, 'chunk_chars': 12, 'overlap_chars': 4, 'dev': {}, 'heldout': {}},
+    {'version': 'v1', 'threshold': True, 'chunk_chars': 12, 'overlap_chars': 4, 'dev': {}, 'heldout': {}},
+    {'version': 'v1', 'threshold': 0.5, 'chunk_chars': 0, 'overlap_chars': 0, 'dev': {}, 'heldout': {}},
+    {'version': 'v1', 'threshold': 0.5, 'chunk_chars': 12, 'overlap_chars': 12, 'dev': {}, 'heldout': {}},
+    {'version': 'v1', 'threshold': 0.5, 'chunk_chars': True, 'overlap_chars': 4, 'dev': {}, 'heldout': {}},
+    {'version': 'v1', 'threshold': 0.5, 'chunk_chars': 12, 'overlap_chars': 4, 'dev': 'x', 'heldout': {}},
+    {'version': 'v1', 'threshold': 0.5, 'chunk_chars': 12, 'overlap_chars': 4,
+     'dev': {'cache': '', 'cache_sha256': 'h'}, 'heldout': {}},
+    # missing chunk_chars/overlap_chars
+    {'version': 'v1', 'threshold': 0.5, 'dev': {}, 'heldout': {}},
+])
+def test_invalid_cpu_classifier_config_before_inference(tmp_path, cpu):
+    config = valid_config()
+    config['cpu_classifier'] = cpu
+    path = write_config(tmp_path, config)
+    with pytest.raises(ValueError):
+        iterate.iterate(path, data=tmp_path / 'data', reports=tmp_path / 'reports')
+
+
+class _Sentinel(Exception):
+    pass
+
+
+def _assert_config_validation_passed(tmp_path, config, monkeypatch):
+    """Write config and source, run iterate, assert no config ValueError is raised."""
+    config = config | {'augment': False}
+    (tmp_path / 'raw.jsonl').write_text(
+        ''.join(json.dumps({'text': f'fixture {i}', 'label': i % 2}) + '\n' for i in range(10)))
+    path = write_config(tmp_path, config)
+    monkeypatch.setattr(iterate, 'Client', lambda *a, **k: (_ for _ in ()).throw(_Sentinel()))
+    with pytest.raises(_Sentinel):
+        iterate.iterate(path, data=tmp_path / 'data', reports=tmp_path / 'reports')
+
+
+def test_absent_optional_stages_pass_config_validation(tmp_path, monkeypatch):
+    _assert_config_validation_passed(tmp_path, valid_config(), monkeypatch)
+
+
+def test_optional_stage_missing_caches_pass_config_validation(tmp_path, monkeypatch):
+    # Caches referenced but not on disk: stage is "not available", not an error.
+    config = valid_config()
+    config['activation_probe'] = {
+        'version': 'v1', 'threshold': 0.5,
+        'dev': {'cache': 'nonexistent-dev.jsonl', 'cache_sha256': 'abc'},
+        'heldout': {'cache': 'nonexistent-heldout.jsonl', 'cache_sha256': 'def'}}
+    config['cpu_classifier'] = {
+        'version': 'v1', 'threshold': 0.5, 'chunk_chars': 12, 'overlap_chars': 4,
+        'dev': {'cache': 'nonexistent-dev.jsonl', 'cache_sha256': 'abc'},
+        'heldout': {'cache': 'nonexistent-heldout.jsonl', 'cache_sha256': 'def'}}
+    _assert_config_validation_passed(tmp_path, config, monkeypatch)
