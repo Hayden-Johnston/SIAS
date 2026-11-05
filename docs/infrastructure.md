@@ -28,9 +28,9 @@ Install the optional `activations` extra (configured to use the CPU PyTorch whee
 ```sh
 uv sync --extra activations
 uv run python -m data_processing.activations \
-  /mnt/storage/llm_security/normalized/dev.jsonl \
-  /mnt/storage/llm_security/activations/dev \
-  --dataset-manifest /mnt/storage/llm_security/normalized/dev.manifest.json \
+  data/normalized/dev.jsonl \
+  data/activations/dev \
+  --dataset-manifest data/normalized/dev.manifest.json \
   --model hf-internal-testing/tiny-random-LlamaForCausalLM \
   --layer-step 3 --dtype fp16 --per-token-fraction 0.05 --seed 0 \
   --max-tokens 512 --device cpu --min-free-gb 20
@@ -69,7 +69,7 @@ Constraints:
   reserved. Maya is the inference engine serving GLM 5.3 flash, not a decision model: GLM stages
   (red-team generation) call it through its OpenAI-style chat API (concurrency 1, every output
   cached). Models of 4B or less run on CPU-only llama.cpp (about 10 GB RAM is free).
-- **Disk.** Raw data, normalized data and caches live under `/mnt/storage/llm_security/` (10 GB
+- **Disk.** Raw data, normalized data and caches live on a local storage volume (10 GB
   budget); `data/` in the repo stays small.
 - **Agent budget.** Claude and Codex are on small plans. Bulk work (generation, labeling,
   classification) runs on local models from scripts, never through an agent.

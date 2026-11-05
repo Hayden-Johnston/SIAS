@@ -56,7 +56,7 @@ attack counts, detected/missed counts and detection with 95% Wilson intervals. I
 the attack denominator, including in channels with benign rows. Benign-only channels have undefined
 recall. Empty directories and older manifests without slices show an explicit empty message.
 
-Use `--runs /path/to/runs` to change the default `/mnt/storage/llm_security/runs`.
+Use `--runs /path/to/runs` to point at a runs directory (the default is configured in the server code).
 Each immediate child directory may contain one `manifest.json` from `data_processing.run`.
 Only complete schema-version-1 manifests are shown, newest first; malformed or unsupported files
 are skipped. Run-directory and manifest symlinks are skipped. No datasets, result files, score
