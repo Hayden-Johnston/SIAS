@@ -53,7 +53,7 @@ def manifest_fields(record):
         raise ValueError("unsupported or incomplete manifest")
     result = {key: text(record[key]) for key in
               ("run_id", "timestamp", "pipeline_version", "dataset_sha256", "evaluation_split")}
-    timestamp = dt.datetime.fromisoformat(result["timestamp"].replace("Z", "+00:00"))  # 3.10 rejects "Z"
+    timestamp = dt.datetime.fromisoformat(result["timestamp"].replace("Z", "+00:00"))  # noqa: FURB162 (system python3 3.10 rejects "Z")
     if timestamp.utcoffset() is None:
         raise ValueError("timestamp needs timezone")
     result["timestamp"] = timestamp.astimezone(dt.timezone.utc).isoformat()  # noqa: UP017 (system python3 is 3.10)
