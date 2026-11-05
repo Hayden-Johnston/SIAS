@@ -6,7 +6,16 @@ import fcntl
 import hashlib
 from pathlib import Path
 
-from data_processing import augment, evaluate, generate, rules, sources, split, sweep
+from data_processing import (
+    augment,
+    evaluate,
+    generate,
+    model_stage,
+    rules,
+    sources,
+    split,
+    sweep,
+)
 from data_processing.normalize import canonical_json, normalize
 from data_processing.run import (
     atomic_write,
@@ -93,7 +102,7 @@ def red_team_round(work, config, timestamp):
     return summary
 
 
-def fused_runs(work, runs, configs, fpr_cap, optional_stages=None):
+def fused_runs(work, runs, configs, fpr_cap, optional_stages=None, suffix='fused'):
     """Replay the common sample only; never fill missing scores with inference."""
     paths = {}
     for evaluation in ('validation', 'held_out'):
@@ -109,10 +118,10 @@ def fused_runs(work, runs, configs, fpr_cap, optional_stages=None):
                                        for _, row in read_rows(stage['cache'])
                                        if row['id'] in ids).encode())
             stage.update(cache=str(cache.resolve()), cache_sha256=digest(cache))
-        config = model | {'run_id': model['run_id'].removesuffix('maya') + 'fused',
+        config = model | {'run_id': model['run_id'].removesuffix('maya') + suffix,
                           'stages': [*stages, *model['stages']],
                           'fusion': {'threshold': 0.5}}
-        path = work / f'{evaluation}-fused-run.json'
+        path = work / f'{evaluation}-{suffix}-run.json'
         write_json(path, config)
         paths[evaluation] = path
     dev = load_json(configs['validation-maya']['dataset_manifest'])
@@ -122,7 +131,7 @@ def fused_runs(work, runs, configs, fpr_cap, optional_stages=None):
                 'stages': names, 'fpr_cap': fpr_cap,
                 'held_out_delta_vs_best_single': None, 'manifests': []}
     selected = sweep.sweep(paths['validation'], paths['held_out'], fpr_cap,
-                           work / 'fusion-sweep.json')
+                           work / ('fusion-sweep.json' if suffix == 'fused' else f'{suffix}-sweep.json'))
     manifests = []
     for path in paths.values():
         config = load_json(path)
@@ -155,7 +164,7 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                 'pipeline_version', 'rule_threshold', 'model_threshold'}
     if (not isinstance(config, dict) or not required <= set(config)
             or set(config) - required - {'red_team', 'augment', 'fusion_fpr_cap',
-                                       'activation_probe', 'cpu_classifier'}):
+                                       'activation_probe', 'cpu_classifier', 'cpu_classifier_run'}):
         raise ValueError('iteration config must contain exactly the documented fields')
     if type(config.get('augment', True)) is not bool:
         raise ValueError('augment must be boolean')
@@ -196,6 +205,21 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                 or not isinstance(source['inputs'], list) or not source['inputs']):
             raise ValueError('invalid source config')
         inputs.append([config_path.resolve().parent / path for path in source['inputs']])
+    # Live scoring is separate from the existing precomputed-cache configuration.
+    cpu_run = config.get('cpu_classifier_run')
+    if 'cpu_classifier_run' in config:
+        if (not isinstance(cpu_run, dict)
+                or set(cpu_run) != {'config', 'server_config', 'threshold'}):
+            raise ValueError('cpu_classifier_run requires config, server_config and threshold')
+        if 'cpu_classifier' in config:
+            raise ValueError('choose cpu_classifier or cpu_classifier_run')
+        number(cpu_run['threshold'], 'cpu_classifier_run threshold', 1)
+        for field in ('config', 'server_config'):
+            if not isinstance(cpu_run[field], str) or not cpu_run[field].strip():
+                raise ValueError('cpu_classifier_run paths must be nonempty strings')
+        cpu_paths = {field: config_path.resolve().parent / cpu_run[field]
+                     for field in ('config', 'server_config')}
+        cpu_settings, _, _ = model_stage.settings(cpu_paths['config'], REPO / '.env')
     optional_stages = {'validation': [], 'held_out': []}
     cache_hashes, availability = {}, {}
     for key, name in [('activation_probe', 'activation-probe'), ('cpu_classifier', 'cpu-classifier')]:
@@ -246,6 +270,9 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                 'mappings': [digest(p) for p in sorted(
                     (Path(sources.__file__).parent / 'source_mappings').glob('*.json'))]}
     identity.update(cache_hashes)
+    if cpu_run is not None:
+        identity['cpu_classifier_run'] = [digest(model_stage.__file__),
+                                          *[digest(path) for path in cpu_paths.values()]]
     if options['enabled']:
         identity['red_team'] = [digest(generate.__file__), digest(evaluate.__file__)]
         # Resolve paths after hashing the original config so its identity stays stable.
@@ -359,9 +386,49 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                 path = work / f'{stem}-run.json'
                 write_json(path, run_config)
                 manifests.append(replay(path, runs / run_id))
+        cpu_counts = {}
+        without_cpu = None
+        if cpu_run is not None:
+            for evaluation in ('validation', 'held_out'):
+                maya = run_configs[f'{evaluation}-maya']
+                cache = work / f'{evaluation}-cpu-classifier-scores.jsonl'
+                summary_path = cache.with_suffix('.summary.json')
+                if not summary_path.exists():
+                    queue = work / 'cpu-classifier.sqlite'
+                    kwargs = {'config_path': cpu_paths['config'], 'queue_path': queue,
+                              'env_file': REPO / '.env', 'replay_only': True}
+                    try:
+                        summary = model_stage.write_cache(
+                            maya['dataset'], maya['dataset_manifest'], cache, **kwargs)
+                    except ValueError as error:
+                        if str(error) != 'model stage replay-only cache miss':
+                            raise
+                        # Export submits pending chunks but never performs inference itself.
+                        # Only the proxy may start the CPU evaluator; it never manages Maya.
+                        client = Client(queue, model_sets={cpu_settings['model']: 'evaluator'},
+                                        server_config=cpu_paths['server_config'])
+                        client.drain()
+                        summary = model_stage.write_cache(
+                            maya['dataset'], maya['dataset_manifest'], cache, **kwargs)
+                    write_json(summary_path, summary)
+                summary = load_json(summary_path)
+                cpu_counts[evaluation] = summary
+                optional_stages[evaluation].append({
+                    'name': 'cpu-classifier', 'version': summary['version'],
+                    'threshold': cpu_run['threshold'], 'cache': str(cache.resolve()),
+                    **{field: summary[field] for field in
+                       ('cache_sha256', 'chunk_chars', 'overlap_chars')}})
+            availability['cpu_classifier'] = 'available'
+            without_cpu = fused_runs(
+                work, runs, run_configs, config.get('fusion_fpr_cap', 0.0002),
+                {key: [s for s in stages if s['name'] != 'cpu-classifier']
+                 for key, stages in optional_stages.items()}, suffix='fused-without-cpu')
+            manifests.extend(without_cpu.pop('manifests'))
         fusion = fused_runs(work, runs, run_configs, config.get('fusion_fpr_cap', 0.0002),
                             optional_stages)
         manifests.extend(fusion.pop('manifests'))
+        if cpu_run is not None:
+            fusion['without_cpu_classifier'] = without_cpu
         reports.mkdir(parents=True, exist_ok=True)
         report = reports / f"{state['timestamp'][:10]}-iteration-{state['iteration']:06d}.md"
         lines = [f"# Iteration {state['iteration']}: {config['pipeline_version']}", '',
@@ -376,9 +443,12 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
         probe_status = availability['activation_probe']
         lines.append(f'probe: {probe_status}')
         lines.append('cpu-classifier: ' + availability['cpu_classifier'])
+        if cpu_run is not None:
+            lines.append('CPU classifier sample counts and cached latency: ' + canonical_json(cpu_counts))
         for result in manifests:
             m = result['metrics']
-            label = 'fused' if len(result['stages']) > 1 else result['stages'][0]['name']
+            label = (result['run_id'].split('-', 3)[3] if len(result['stages']) > 1
+                     else result['stages'][0]['name'])
             lines.append(f"- {result['evaluation_split']} / {label}: {result['records']} rows; "
                          f"TP {m['tp']}, FP {m['fp']}, FN {m['fn']}, TN {m['tn']}; "
                          f"cached stage latency {sum(s['cached_latency_ms_total'] for s in result['stages']):.3f} ms.")
@@ -393,7 +463,8 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                       ('Novel means absent from full scoring dev, including augmentation. '
                        'Multi-technique rows appear in multiple slices; small_sample means n < 20.')])
         for result in manifests:
-            label = 'fused' if len(result['stages']) > 1 else result['stages'][0]['name']
+            label = (result['run_id'].split('-', 3)[3] if len(result['stages']) > 1
+                     else result['stages'][0]['name'])
             lines.extend(['', f"### {result['evaluation_split']} / {label}", '',
                           canonical_json({'metrics': result['metrics'],
                                           'by_technique': result['slices']['by_technique'],
@@ -404,6 +475,8 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                           'split_counts': split_counts, 'augmentation': augmentation,
                           'red_team': red_team, 'probe': probe_status,
                           'cpu_classifier': availability['cpu_classifier'], 'fusion': fusion}
+        if cpu_run is not None:
+            result['cpu_classifier_counts'] = cpu_counts
         write_json(work / 'complete.json', result)
         return result
 

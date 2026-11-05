@@ -262,3 +262,129 @@ def test_optional_stage_missing_caches_pass_config_validation(tmp_path, monkeypa
         'dev': {'cache': 'nonexistent-dev.jsonl', 'cache_sha256': 'abc'},
         'heldout': {'cache': 'nonexistent-heldout.jsonl', 'cache_sha256': 'def'}}
     _assert_config_validation_passed(tmp_path, config, monkeypatch)
+
+
+@pytest.mark.parametrize('option', [None, {}, True,
+    {'config': '', 'server_config': 'server.json', 'threshold': 0.5},
+    {'config': 'model.json', 'server_config': 'server.json', 'threshold': True},
+])
+def test_invalid_cpu_classifier_run_before_inference(tmp_path, option):
+    config = valid_config() | {'cpu_classifier_run': option}
+    with pytest.raises(ValueError, match='cpu_classifier_run'):
+        iterate.iterate(write_config(tmp_path, config), data=tmp_path / 'data')
+
+
+@pytest.fixture
+def cpu_iteration(tmp_path, monkeypatch):
+    import httpx
+    from test_iterate import FakeClient
+
+    from llm_proxy import Client
+
+    config = valid_config() | {'augment': False, 'sample_cap': 25,
+                              'cpu_classifier_run': {
+                                  'config': 'model.json', 'server_config': 'server.json',
+                                  'threshold': 0.5}}
+    config['split']['heldout_families'] = []
+    (tmp_path / 'raw.jsonl').write_text(''.join(
+        json.dumps({'text': f'synthetic fixture {i}', 'label': i % 2}) + '\n'
+        for i in range(100)))
+    (tmp_path / 'model.json').write_text(json.dumps({
+        'model': 'qwen-fixture', 'parameter_count': 2_000_000_000,
+        'chunk_chars': 32, 'overlap_chars': 4, 'base_url': 'http://localhost:8081/v1'}))
+    (tmp_path / 'server.json').write_text(json.dumps({'evaluator': {
+        'host': 'localhost', 'port': 8081, 'gpus': []}}))
+    for name in ('MODEL_STAGE_URL', 'MODEL_STAGE_API_KEY'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(iterate, 'Client', lambda *a, **k:
+                        Client(*a, **k) if 'model_sets' in k else FakeClient())
+    calls, starts = [], []
+    ready = [False]
+
+    def get(self, url, **kwargs):
+        assert url == 'http://localhost:8081/health'
+        return httpx.Response(200 if ready[0] else 503)
+
+    def start(command, **kwargs):
+        assert command[2:4] == ['up', 'evaluator']
+        assert command[-1] == str(tmp_path / 'server.json')
+        starts.append(command)
+        ready[0] = True
+
+    def post(self, url, *, content, headers):
+        assert url == 'http://localhost:8081/v1/chat/completions'
+        assert 'Authorization' not in headers
+        request = json.loads(content)
+        assert request['model'] == 'qwen-fixture'
+        assert request['max_tokens'] == 8
+        calls.append(request)
+        index = int(request['messages'][1]['content'].split()[-1])
+        return httpx.Response(200, json={'choices': [{'message': {'content': str(index % 2)}}]})
+
+    monkeypatch.setattr(httpx.Client, 'get', get)
+    monkeypatch.setattr(httpx.Client, 'post', post)
+    monkeypatch.setattr('llm_proxy.proxy.subprocess.run', start)
+    return write_config(tmp_path, config), tmp_path / 'data', tmp_path / 'reports', calls, starts
+
+
+def test_cpu_iteration_sample_counts_fusion_and_offline_replay(cpu_iteration, monkeypatch):
+    config, data, reports, calls, starts = cpu_iteration
+    result = iterate.iterate(config, data=data, reports=reports)
+    assert len(starts) == 1
+    assert 0 < len(calls) <= 50
+    assert result['fusion']['stages'] == ['rules', 'cpu-classifier', 'maya']
+    assert result['fusion']['fused_metrics']['detection']['value'] == 1
+    assert result['fusion']['fused_metrics']['false_positive']['value'] == 0
+    baseline = result['fusion']['without_cpu_classifier']
+    assert baseline['stages'] == ['rules', 'maya']
+    assert baseline['fused_metrics']['detection']['value'] == 0
+    work = next(data.glob('runs/.iterations/*/state.json')).parent
+    for evaluation in ('validation', 'held_out'):
+        summary = result['cpu_classifier_counts'][evaluation]
+        assert 0 < summary['records'] <= 25
+        assert summary['entries'] == summary['records']
+        assert summary['latency_ms_total'] > 0
+        maya_ids = {r['id'] for _, r in iterate.read_rows(work / f'{evaluation}-maya.jsonl')}
+        cpu_ids = {r['id'] for _, r in iterate.read_rows(
+            work / f'{evaluation}-cpu-classifier-scores.jsonl')}
+        assert maya_ids == cpu_ids
+    assert 'without_cpu_classifier' in next(reports.glob('*.md')).read_text()
+    # Re-export from the SQLite response cache, with no HTTP or lifecycle operations.
+    (work / 'complete.json').unlink()
+    for path in work.glob('*-cpu-classifier-scores.*'):
+        path.unlink()
+    monkeypatch.setattr(iterate, 'Client', lambda *a, **k: pytest.fail('new inference'))
+    monkeypatch.setattr('httpx.Client.get', lambda *a, **k: pytest.fail('server health check'))
+    monkeypatch.setattr('httpx.Client.post', lambda *a, **k: pytest.fail('HTTP request'))
+    assert iterate.iterate(config, data=data, reports=reports) == result
+
+
+def test_cpu_iteration_refusal_stops_and_persisted_failure_blocks(cpu_iteration, monkeypatch):
+    import httpx
+
+    from llm_proxy import ProxyError
+
+    config, data, reports, _calls, starts = cpu_iteration
+    monkeypatch.setattr(httpx.Client, 'post', lambda *a, **k: httpx.Response(
+        200, json={'choices': [{'message': {'refusal': 'synthetic refusal'}}]}))
+    with pytest.raises(ProxyError):
+        iterate.iterate(config, data=data, reports=reports)
+    assert len(starts) == 1
+    assert not list(data.rglob('complete.json'))
+    monkeypatch.setattr(iterate, 'Client', lambda *a, **k: pytest.fail('drained after refusal'))
+    with pytest.raises(ProxyError, match='failed request'):
+        iterate.iterate(config, data=data, reports=reports)
+
+
+def test_cpu_iteration_option_omitted_keeps_existing_workflow(cpu_iteration, monkeypatch):
+    config, data, reports, calls, starts = cpu_iteration
+    settings = json.loads(config.read_text())
+    del settings['cpu_classifier_run']
+    config.write_text(json.dumps(settings))
+    monkeypatch.setattr(iterate.model_stage, 'write_cache',
+                        lambda *a, **k: pytest.fail('CPU classifier called while off'))
+    result = iterate.iterate(config, data=data, reports=reports)
+    assert not calls and not starts
+    assert 'cpu_classifier_counts' not in result
+    assert 'without_cpu_classifier' not in result['fusion']
+    assert result['fusion']['stages'] == ['rules', 'maya']
