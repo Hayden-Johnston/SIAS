@@ -1,3 +1,4 @@
+import base64
 import contextlib
 import hashlib
 import io
@@ -7,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from data_processing.normalize import normalize
+from data_processing.rules import canonicalize
 
 
 def record(**changes):
@@ -217,6 +219,50 @@ class NormalizeTests(unittest.TestCase):
             main()
         self.assertEqual(error.exception.code, 2)
         self.assertNotIn("private synthetic fixture", stderr.getvalue())
+
+
+class CanonicalizeTests(unittest.TestCase):
+    def test_empty_string(self):
+        self.assertEqual(canonicalize(""), "")
+
+    def test_only_zero_width_chars(self):
+        self.assertEqual(canonicalize("\u200b\u200c\u200d\ufeff"), "")
+
+    def test_mixed_homoglyph_and_zero_width(self):
+        # "bypass" with Cyrillic а (U+0430) and zero-width space/joiner
+        self.assertEqual(canonicalize("by\u200bp\u0430ss\u200c"), "bypass")
+
+    def test_nested_base64_inside_hex_is_single_pass(self):
+        # hex(base64("hello")) decodes once to base64("hello"), not to "hello"
+        b64 = base64.b64encode(b"hello").decode()
+        hex_of_b64 = b64.encode().hex()
+        result = canonicalize(hex_of_b64)
+        self.assertEqual(result, b64.casefold())
+        self.assertNotEqual(result, "hello")
+
+    def test_invalid_base64_left_unchanged(self):
+        # 12 '/' chars decode to 8 bytes of 0xff, which is not valid UTF-8
+        text = "////////////"
+        self.assertEqual(canonicalize(text), text)
+
+    def test_very_long_input_completes(self):
+        text = "a" * 100_000
+        self.assertEqual(canonicalize(text), text)
+
+    def test_idempotence(self):
+        cases = [
+            "",
+            "plain text",
+            "by\u200bp\u0430ss",
+            "aGVsbG8=",
+            "614756736247383d",
+            "////////////",
+            "\uff22\uff59\uff50\uff41\uff53\uff53",  # fullwidth "Bypass"
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                once = canonicalize(text)
+                self.assertEqual(canonicalize(once), once)
 
 
 if __name__ == "__main__":
