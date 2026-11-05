@@ -131,3 +131,45 @@ def test_cli_status_and_unknown_set(configured):
     result = subprocess.run([sys.executable, str(script), 'down', 'maya',
                              '--config', str(path)], capture_output=True, text=True, check=False)
     assert result.returncode != 0
+
+
+@pytest.mark.parametrize('argv,expected_code', [
+    ([], 2),
+    (['status'], 2),
+    (['reboot', 'evaluator'], 2),
+    (['status', 'evaluator', '--config'], 2),
+])
+def test_cli_arg_parsing(argv, expected_code):
+    script = Path(servers.__file__)
+    result = subprocess.run([sys.executable, str(script)] + argv,
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == expected_code
+
+
+def test_cli_missing_config_file(tmp_path):
+    script = Path(servers.__file__)
+    missing = tmp_path / 'nonexistent.json'
+    result = subprocess.run([sys.executable, str(script), 'status', 'evaluator',
+                             '--config', str(missing)], capture_output=True, text=True, check=False)
+    assert result.returncode == 1
+    assert 'No such file' in result.stderr
+
+
+def test_cli_empty_config_file(tmp_path):
+    script = Path(servers.__file__)
+    path = tmp_path / 'config.json'
+    path.write_text('')
+    result = subprocess.run([sys.executable, str(script), 'status', 'evaluator',
+                             '--config', str(path)], capture_output=True, text=True, check=False)
+    assert result.returncode == 1
+    assert result.stderr.strip() != ''
+
+
+def test_cli_config_missing_keys(tmp_path):
+    script = Path(servers.__file__)
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps({}))
+    result = subprocess.run([sys.executable, str(script), 'status', 'evaluator',
+                             '--config', str(path)], capture_output=True, text=True, check=False)
+    assert result.returncode == 1
+    assert 'storage_dir' in result.stderr
