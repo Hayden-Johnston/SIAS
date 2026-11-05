@@ -163,6 +163,16 @@ each dataset row; payload text is discarded before scoring. Missing cache scores
 
 ## Metrics and dataset authority
 
+Run manifests include `slices.by_channel`, `by_length_bucket`, `by_technique` and
+`by_attack_family` for fused verdicts. Each observed slice has confusion counts, detection and
+false-positive rates with 95% Wilson intervals and denominator `n`, plus total row count `n`
+and `small_sample: true` when that count is below 20. Undefined rates stay null.
+Multi-technique rows contribute once to each matching technique; slice counts overlap.
+Benign rows have empty technique lists and contribute no technique slice, so technique
+false-positive rates are undefined. Empty datasets have empty slice maps.
+Dashboard Metrics shows these aggregates for a selected run; older manifests remain readable
+with no slices. Replay runner version 4 pins the added metadata and metrics in run identity.
+
 Detection is TP / (TP + FN); false positives are FP / (FP + TN). Rates use fractions rather than
 percentages, include denominator `n`, and have two-sided 95% Wilson intervals. Empty denominators
 are `null`, not zero. Zero observed errors still produce uncertainty. Two-sided Wilson bounds

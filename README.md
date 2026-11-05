@@ -54,6 +54,8 @@ per-stage latency, and chunk location rates. Replay evaluates every stage on eve
 reports independent stage metrics alongside max-fused detection and false positives; optional
 weights and a fusion threshold live in the run JSON config. Complete stage caches are required
 ([fusion settings](docs/pipeline.md#replay-stage-fusion)). See [docs/runs.md](docs/runs.md).
+Run manifests and dashboard Metrics also break down fused detection and false positives by
+channel, length, technique and attack family, keeping small samples visible with a warning.
 
 ### The red-team loop
 
@@ -351,6 +353,18 @@ JBB is catalogued as seeds only and contributes no scored rows. Imports still re
 No public source covers long context, documents, tool output, code comments or hard negatives well.
 Those come from the red team and must be approved by the evaluator. Generated data is published only
 after review.
+
+Offline [taxonomy coverage](reports/2026-11-04-dataset-coverage.md) from the approved source
+manifests shows no document, tool-output, code-comment or multi-turn attack rows, and no explicit
+roleplay, encoding, delimiter-spoof, payload-split or many-shot annotations. Long-context coverage
+is unknown because dataset manifests do not record lengths. All source rows still await evaluator
+approval; `novel` includes unspecified techniques. Refresh the table without reading payloads:
+
+```sh
+python3 ops/coverage.py
+# Select other aggregate manifests and optionally save the Markdown table:
+python3 ops/coverage.py source.manifest.json --output reports/coverage.md
+```
 
 ## Roadmap
 

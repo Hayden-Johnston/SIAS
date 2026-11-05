@@ -46,6 +46,11 @@ are skipped until the next refresh. Agent logs and payload files are never opene
 
 ## Run metrics
 
+The Metrics page includes a run selector and fused metrics by channel, length bucket, technique
+and attack family. It shows total slice counts, each rate's denominator and 95% Wilson interval,
+and flags slices with fewer than 20 rows. Technique slices overlap and exclude benign rows;
+undefined false-positive rates stay undefined. Older manifests show no slice metrics until replayed.
+
 Use `--runs /path/to/runs` to change the default `/mnt/storage/llm_security/runs`.
 Each immediate child directory may contain one `manifest.json` from `data_processing.run`.
 Only complete schema-version-1 manifests are shown, newest first; malformed or unsupported files

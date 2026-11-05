@@ -50,6 +50,9 @@ a { color: #0072b2; } .swatch { display: inline-block; width: .8rem; height: .8r
 <main data-page="metrics" hidden><section><h2>Improvement over time</h2>
 <p class="muted">95% confidence bands from manifests. Detection uses a log distance from 100%; false positives use a log rate. Exact zero errors and interval bounds are clipped at 0.00001% error for display. Dashed lines mark targets; labels mark each iteration and pipeline version.</p>
 <div class="charts"><article id="detection-chart"></article><article id="fp-chart"></article></div></section>
+<section><h2>Metrics by slice</h2><label for="slice-run">Select run </label><select id="slice-run"></select>
+<p class="muted">Fused verdicts. Small samples (n&lt;20) stay visible. Techniques overlap; benign rows have no technique. Each rate has its own denominator and 95% Wilson interval.</p>
+<p id="no-slices" class="muted"></p><div class="table-wrap"><table><thead><tr><th>Slice</th><th>Value</th><th>Records</th><th>Detection (95% CI; n)</th><th>False positives (95% CI; n)</th></tr></thead><tbody id="metric-slices"></tbody></table></div></section>
 </main>
 <script src="/metrics.js"></script>
 <script src="/activity.js"></script>

@@ -85,6 +85,21 @@ def windows(length, chunk_chars, overlap_chars):
     return [(start, min(start + chunk_chars, length)) for start in starts]
 
 
+def sliced_metrics(results):
+    slices = {}
+    for field in ("channel", "length_bucket", "technique", "attack_family"):
+        groups = {}
+        for row in results:
+            values = row["techniques"] if field == "technique" else [row[field]]
+            for value in values:
+                groups.setdefault(value, []).append(row)
+        slices["by_" + field] = {
+            value: metrics(group) | {"n": len(group), "small_sample": len(group) < 20}
+            for value, group in sorted(groups.items())
+        }
+    return slices
+
+
 def length_bucket(length):
     # Character counts: short (4 Ki), medium (16 Ki), and long contexts.
     return "0-4096" if length <= 4096 else "4097-16384" if length <= 16384 else "16385+"
@@ -157,7 +172,8 @@ def prepare(config_path):
         # Discard payload text before retaining results or reporting.
         turns = ([message["content"] for message in json.loads(row["text"])]
                  if row["channel"] == "multi_turn" else [row["text"]])
-        metadata = {key: row[key] for key in ("id", "label", "attack_family", "channel", "spans")}
+        metadata = {key: row[key] for key in
+                    ("id", "label", "attack_family", "channel", "techniques", "spans")}
         metadata["turn_lengths"] = [len(turn) for turn in turns]
         metadata["length_bucket"] = length_bucket(sum(metadata["turn_lengths"]))
         rows.append(metadata)
@@ -215,7 +231,7 @@ def prepare(config_path):
     if weights.keys() - names:
         raise ValueError("fusion weights contain unknown stage names")
     identity = {
-        "runner_version": 3, "config": config,
+        "runner_version": 4, "config": config,
         "dataset_sha256": dataset_manifest["output_sha256"],
         "dataset_manifest_sha256": digest(dataset_manifest_path),
     }
@@ -308,6 +324,7 @@ def replay(config_path, run_directory):
         "evaluation_split": config["evaluation_split"],
         "evaluator_approved": dataset_manifest.get("evaluator_approved") is True,
         "records": len(results), "metrics": metrics(results),
+        "slices": sliced_metrics(results),
         "fusion": {"method": "max", "threshold": config.get("fusion", {}).get("threshold", 0.5),
                    "weights": {stage["name"]: config.get("fusion", {}).get("weights", {}).get(
                        stage["name"], 1) for stage, _ in stages},
