@@ -132,9 +132,11 @@ def test_failed_request_stops_before_drain(setup):
 
 def test_invalid_classifier_output_never_becomes_benign(setup):
     FakeClient.content = 'synthetic invalid response'
-    with pytest.raises(ValueError, match='exactly 0 or 1'):
-        run(setup)
-    assert not list(setup[1].glob('runs/iteration-*-maya/manifest.json'))
+    run(setup)
+    sidecars = list(setup[1].rglob('*-maya-scores.invalid.json'))
+    assert sidecars and all(json.loads(p.read_text())['invalid_outputs'] > 0 for p in sidecars)
+    for cache in setup[1].rglob('*-maya-scores.jsonl'):
+        assert all(json.loads(line)['score'] == 1 for line in cache.read_text().splitlines())
 
 
 @pytest.mark.parametrize('cap', [0, -1, True])
@@ -187,10 +189,10 @@ def test_red_team_approval_split_resume_and_replay(setup, monkeypatch, capsys):
 
     monkeypatch.setattr(iterate.evaluate, 'evaluate', evaluate)
     # Interrupt scoring after the approved rows and family splits are checkpointed.
-    FakeClient.content = 'invalid synthetic classifier output'
-    with pytest.raises(ValueError):
+    FakeClient.status = 'failed'
+    with pytest.raises(ProxyError):
         run(setup)
-    FakeClient.content = '0'
+    FakeClient.status = 'done'
     result = run(setup)
     summary = result['red_team']
     assert summary['generated'] == 4 and summary['approved'] == 3

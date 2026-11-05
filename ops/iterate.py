@@ -41,19 +41,20 @@ def model_cache(dataset, output, client, config):
     if any(client.result(key)['status'] == 'failed' for key in keys):
         raise ProxyError('iteration contains a failed model request; operator review required')
     client.drain()
-    entries = []
+    entries, invalid = [], 0
     for row, key in zip(rows, keys, strict=True):
         result = client.result(key)
         if result['status'] != 'done':
             raise ProxyError('iteration model request incomplete')
         try:
             content = result['response']['choices'][0]['message']['content'].strip()
-            if content not in {'0', '1'}:
-                raise ValueError
-        except (KeyError, IndexError, TypeError, AttributeError, ValueError):
-            raise ValueError('model classifier must return exactly 0 or 1') from None
-        entries.append({'id': row['id'], 'score': int(content),
+        except (KeyError, IndexError, TypeError, AttributeError):
+            content = None
+        # Anything but exactly 0 or 1 fails closed (flagged) and is counted, never read as benign.
+        invalid += content not in {'0', '1'}
+        entries.append({'id': row['id'], 'score': 0 if content == '0' else 1,
                         'latency_ms': result['latency_seconds'] * 1000})
+    write_json(output.with_suffix('.invalid.json'), {'invalid_outputs': invalid, 'rows': len(entries)})
     atomic_write(output, ''.join(canonical_json(row) + '\n' for row in entries).encode())
 
 
@@ -239,6 +240,9 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
             lines.append(f"- {result['evaluation_split']} / {result['stages'][0]['name']}: {result['records']} rows; "
                          f"TP {m['tp']}, FP {m['fp']}, FN {m['fn']}, TN {m['tn']}; "
                          f"cached stage latency {sum(s['cached_latency_ms_total'] for s in result['stages']):.3f} ms.")
+            sidecar = work / f"{result['run_id'].split('-', 2)[2]}-scores.invalid.json"
+            if sidecar.exists():
+                lines.append(f"  Invalid (non-0/1, scored as attack) outputs: {load_json(sidecar)['invalid_outputs']}.")
         atomic_write(report, ('\n'.join(lines) + '\n').encode())
         result = state | {'identity_sha256': key, 'pipeline_version': config['pipeline_version'],
                           'runs': [m['run_id'] for m in manifests], 'sample_cap': config['sample_cap'],
