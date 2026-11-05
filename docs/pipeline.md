@@ -136,6 +136,105 @@ chunk location and cached latency now cover all rows; latency sums describe cach
 not an early-exit cascade or replay runtime. An empty conversation has no chunks, stage score 0,
 zero cached latency and null location. Fusion never compares chunk coordinates across stages.
 
+## Manifest keys
+
+Complete reference for keys emitted in `manifest.json` by `data_processing.run`.
+
+**Top-level:**
+
+| Key | Definition |
+|-----|------------|
+| `schema_version` | Manifest format version (currently 1). |
+| `identity_sha256` | SHA-256 of runner version, config, dataset and split-manifest checksums. |
+| `status` | Always `"complete"` for a finished run. |
+| `run_id` | Operator-supplied run identifier. |
+| `timestamp` | UTC run start time. |
+| `iteration` | Nonnegative iteration number. |
+| `pipeline_version` | Pipeline version string. |
+| `dataset_sha256` | SHA-256 of the normalized dataset file. |
+| `evaluation_split` | One of `"train"`, `"validation"`, `"held_out"`. |
+| `evaluator_approved` | True if the dataset manifest carries evaluator approval. |
+| `records` | Total row count scored. |
+| `metrics` | Top-level (fused) confusion counts and rates. |
+| `slices` | Per-channel, length-bucket, technique and attack-family metrics. |
+| `fusion` | Fusion method, threshold, per-stage weights and fused metrics. |
+| `attack_distribution` | Attack count per `attack_family`. |
+| `stages` | List of per-stage score and metric entries. |
+| `results_file` | Name of the sibling results file (`"results.jsonl"`). |
+| `results_sha256` | SHA-256 of `results.jsonl`. |
+
+**`metrics` object** (used at top level, per stage, per slice, and in `fusion`):
+
+| Key | Definition |
+|-----|------------|
+| `tp` | True-positive count. |
+| `fp` | False-positive count. |
+| `fn` | False-negative count. |
+| `tn` | True-negative count. |
+| `detection` | Rate object: `tp / (tp + fn)`. |
+| `false_positive` | Rate object: `fp / (fp + tn)`. |
+
+**Rate object** (value of `detection`, `false_positive`, and location rates):
+
+| Key | Definition |
+|-----|------------|
+| `value` | Point estimate; null when the denominator is 0. |
+| `n` | Denominator (sample size). |
+| `ci95` | Two-sided 95 % Wilson interval `[lower, upper]`; nulls when `n` is 0. |
+| `method` | Always `"wilson"`. |
+
+**`slices` object:**
+
+| Key | Definition |
+|-----|------------|
+| `by_channel` | Metrics grouped by dataset `channel` value. |
+| `by_length_bucket` | Metrics grouped by length bucket (`0-4096`, `4097-16384`, `16385+`). |
+| `by_technique` | Metrics grouped by technique; multi-technique rows appear in each. |
+| `by_attack_family` | Metrics grouped by `attack_family`. |
+| `novel_technique` | List of techniques absent from dev; null when no dev technique counts are available. |
+
+Each slice entry is a `metrics` object extended with:
+
+| Key | Definition |
+|-----|------------|
+| `n` | Group row count. |
+| `small_sample` | True when `n < 20`. |
+
+Each `novel_technique` entry contains `technique`, `n`, `small_sample`, and `detection`.
+
+**Per-stage entry** (each element of `stages`):
+
+| Key | Definition |
+|-----|------------|
+| `name` | Stage name from the run config. |
+| `version` | Stage version string. |
+| `threshold` | Independent detection threshold. |
+| `reached` | Number of rows scored by this stage. |
+| `metrics` | Per-stage confusion counts and rates. |
+| `caught` | Rows detected (score >= threshold) by this stage. |
+| `passed` | Rows not detected by this stage. |
+| `score_summary` | Object with `min`, `max`, `mean` of stage scores. |
+| `cached_latency_ms_total` | Sum of cached per-entry latencies. |
+| `cached_latency_ms_mean` | Mean cached latency; null when no rows. |
+
+Chunk stages additionally include:
+
+| Key | Definition |
+|-----|------------|
+| `chunk_chars` | Window size in characters. |
+| `overlap_chars` | Window overlap in characters. |
+| `location` | Object with `overall`, `by_channel`, `by_length_bucket` rate objects measuring span-chunk overlap for attack rows. |
+| `spans_longer_than_overlap` | Count of attack spans longer than the overlap. |
+
+**`fusion` object:**
+
+| Key | Definition |
+|-----|------------|
+| `method` | Always `"max"`. |
+| `threshold` | Fusion detection threshold. |
+| `weights` | Per-stage weight map (default 1 for omitted stages). |
+| `metrics` | Fused confusion counts and rates. |
+
 ## Replay-only fusion weight sweep
 
 ```sh
