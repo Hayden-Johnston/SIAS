@@ -162,3 +162,35 @@ rate. These measure evaluator agreement, not detection improvement. Generation c
 `replay_only` mode and Maya transport failures are checkpointed skips; refusals fail the iteration.
 Completed rounds resume without regeneration or reevaluation. Generation replay-only mode does not
 disable inference in other stages. No Maya lifecycle operations are performed.
+
+## Offline activation probe cache
+
+With `uv sync --extra activations`, train a CPU NumPy logistic probe without inference:
+
+```sh
+uv run python -m data_processing.probe activations/index.json data/splits/heldout.jsonl \
+  caches/heldout-probe.jsonl --layer 3 --train-split dev
+```
+
+`INDEX` accepts the capture's schema-v2 `index.json` or `index.jsonl`. `DATASET` is the
+normalized JSONL to score; its directory must also contain `dev.jsonl` and the
+`split_manifest.json` produced by `data_processing.split`. The dev checksum/count are verified;
+only dev labels train the probe, and every training/scoring ID needs an activation. Missing IDs
+fail export. Use a frozen index while training. All indexed shard checksums and model identity,
+tokenizer version, layers and dtype must agree, including safetensors metadata. Only the selected
+layer's `last_token` vectors are used; capture truncation still applies.
+
+Training standardizes features using dev means/stds, then performs 2,000 full-batch logistic
+updates with coefficient L2 penalty 0.01 and a curvature-bounded step. Zero initialization and
+no sampling remove randomness; repeated runs in the same numerical environment reproduce cache
+bytes. These are baseline settings, not tuned quality claims. Memory scales with the selected
+training/scoring vectors. Test/heldout training is refused. A dataset scored on dev is an in-sample
+measurement; detection and false positives need separate approved held-out evaluation.
+
+The CLI prints an aggregate summary, including a version hashing learned weights, standardization,
+layer, activation identity, producer code and dev checksum. Save it alongside the cache. The cache
+contains only `id`, `score`, `latency_ms`; no text. Latency is zero as an explicitly unmeasured
+placeholder, excluding capture and training. Put the returned `version` and `cache_sha256` into a
+regular row stage in the [run config](runs.md), with `name: "activation-probe"`, a chosen threshold
+(for example 0.5), and the cache path; omit chunk settings. Replay needs no activation shards,
+ML extras or model server. Probe scores are not calibrated probabilities or location estimates.
