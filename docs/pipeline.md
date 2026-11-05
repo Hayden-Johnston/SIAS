@@ -161,6 +161,37 @@ deltas (chosen minus all-ones). Undefined held-out rates and deltas are null. Re
 inputs produce identical output. Split declarations do not prove family/group separation: use
 properly separated, approved splits, and do not tune by repeatedly inspecting held-out results.
 
+## Replay-only threshold calibration
+
+```sh
+uv run python -m data_processing.calibrate runs/dev/manifest.json runs/heldout/manifest.json \
+  --output runs/fusion-calibration.json
+```
+
+Supply complete replay run manifests with `validation` and `held_out` splits and matching
+max-fusion weights and stage versions. The script verifies each sibling `results.jsonl`
+checksum/count and reads cached fused scores and metadata only, without datasets, inference,
+or server operations. Weights stay fixed; this does not refit the weight sweep.
+
+For each observed dev FPR cap (1% and 0.1%), allow at most `floor(cap * benign_count)`
+false positives. Sort benign scores descending and set the threshold to the next representable
+float above the first disallowed score. Detection includes equality; tied benign scores are
+excluded together. This is the lowest representable feasible threshold, so it maximizes dev
+recall and deterministically resolves ties toward the lower threshold. If that score is 1,
+the threshold exceeds 1 and flags nothing; it cannot be used in a normal run config, whose
+threshold must be at most 1. Both choices finish before held-out inputs are opened.
+Dev must contain both classes; empty held-out classes produce null rates.
+
+Printed JSON and optional atomic output contain only aggregate confusion counts, rates with
+95% Wilson intervals, per-channel metrics, thresholds, weights, input checksums and inherited
+approval flags. There are no row IDs, paths or payloads. Identical frozen inputs produce
+identical bytes; invalid inputs preserve previous output and inputs cannot be overwritten.
+`too_few_dev_benign` flags fewer than 100 or 1,000 benign dev rows respectively, where a
+single false positive exceeds the cap; `dev_fpr_resolution` records that granularity.
+Even larger samples meeting an observed cap do not establish a population FPR guarantee.
+Split declarations do not prove split hygiene; source labels, augmentation and small/capped
+samples retain their limitations. Held-out results are for reporting, not repeated tuning.
+
 ## Replay-only stage ablation
 
 ```sh

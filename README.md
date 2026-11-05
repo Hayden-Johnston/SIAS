@@ -58,6 +58,9 @@ Run manifests and dashboard Metrics also break down fused detection and false po
 channel, length, technique and attack family, keeping small samples visible with a warning.
 The dashboard Recall page shows the latest complete run’s per-technique and per-channel attack
 counts, detected/missed counts and Wilson intervals, flagging attack samples below 20.
+A replay-only [threshold calibration](docs/pipeline.md#replay-only-threshold-calibration)
+selects fixed-fusion operating points on dev at observed FPR caps of 1% and 0.1%, then
+reports held-out recall and per-channel counts without reading payloads.
 A replay-only [stage ablation](docs/pipeline.md#replay-only-stage-ablation) refits fusion on dev
 after removing each stage and reports held-out detection/FPR deltas, counts and intervals.
 The dashboard Ablation page displays `stage-ablation.json` from its runs directory.
