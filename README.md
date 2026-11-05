@@ -229,8 +229,13 @@ for unsampled rows. Full split counts and the cap are recorded in
 
 Optional `activation_probe` settings add precomputed dev/heldout probe score caches to the same
 sampled fusion ([configuration](docs/pipeline.md#optional-iteration-activation-probe)). Both caches
-must exist; otherwise the report says `probe: not available` and fusion uses rules + Maya.
+must exist; otherwise the report says `probe: not available` and fusion uses the remaining stages.
 The iteration never captures activations or trains a probe. Reports name the stages fused.
+
+Optional `cpu_classifier` settings add precomputed dev/heldout chunk score caches exported by
+`data_processing.model_stage` ([configuration](docs/pipeline.md#optional-iteration-cpu-classifier)).
+Both caches must exist; otherwise the report says `cpu-classifier: not available`. This adds no
+CPU inference to the iteration; available probe caches can participate alongside the classifier.
 
 An optional `red_team` section (see `iterate.example.json`) enables a capped generation and
 CPU evaluator round before splitting. It defaults off. Set `enabled: true`, `groups` (each request

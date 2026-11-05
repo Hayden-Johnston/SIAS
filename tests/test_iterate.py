@@ -533,3 +533,115 @@ def test_incomplete_probe_cache_does_not_fabricate_scores(setup):
     with pytest.raises(ValueError, match='missing required cached score'):
         run(setup)
     assert not list(setup[1].glob('runs/iteration-000002-*-fused/manifest.json'))
+
+
+def configure_cpu_classifier(setup):
+    run(setup)
+    work = next(setup[1].glob('runs/.iterations/*/state.json')).parent
+    stage = {'version': 'synthetic-cpu-v1', 'threshold': 0.5,
+             'chunk_chars': 12, 'overlap_chars': 4}
+    from data_processing.run import windows
+
+    for source_split, evaluation in [('dev', 'validation'), ('heldout', 'held_out')]:
+        cache = setup[0].parent / f'{source_split}-cpu.jsonl'
+        entries = [
+            {'id': row['id'], 'turn': 0, 'start': start, 'score': row['label'], 'latency_ms': 2}
+            for _, row in iterate.read_rows(work / f'{evaluation}-rules.jsonl')
+            for start, _ in windows(len(row['text']), 12, 4)
+        ]
+        iterate.atomic_write(cache, ''.join(iterate.canonical_json(e) + '\n' for e in entries).encode())
+        stage[source_split] = {'cache': cache.name, 'cache_sha256': iterate.digest(cache)}
+    config = json.loads(setup[0].read_text())
+    config['cpu_classifier'] = stage
+    setup[0].write_text(json.dumps(config))
+    return stage
+
+
+@pytest.mark.parametrize('with_probe', [False, True])
+def test_cpu_classifier_chunk_fusion_and_replay(setup, monkeypatch, with_probe):
+    config = json.loads(setup[0].read_text())
+    config['split']['heldout_families'] = []
+    config['sample_cap'] = 25
+    setup[0].write_text(json.dumps(config))
+    if with_probe:
+        configure_probe(setup)
+    configure_cpu_classifier(setup)
+    result = run(setup)
+    names = ['rules', *(['activation-probe'] if with_probe else []), 'cpu-classifier', 'maya']
+    assert result['cpu_classifier'] == 'available'
+    assert result['fusion']['stages'] == names
+    assert result['fusion']['fused_metrics']['detection']['value'] == 1
+    assert result['fusion']['fused_metrics']['false_positive']['value'] == 0
+    fused = json.loads((setup[1] / 'runs' /
+                       f"iteration-{result['iteration']:06d}-held_out-fused/manifest.json").read_text())
+    cpu = next(s for s in fused['stages'] if s['name'] == 'cpu-classifier')
+    assert cpu['cached_latency_ms_total'] > 0
+    assert cpu['chunk_chars'] == 12
+    report = next(p for p in setup[2].glob('*.md') if f"{result['iteration']:06d}" in p.name)
+    assert 'cpu-classifier: available' in report.read_text()
+    assert 'Fused ' + ' + '.join(names) + ' (same capped sample)' in report.read_text()
+    before = {p: p.read_bytes() for p in setup[1].rglob('*') if p.is_file()}
+    checkpoint = next(p for p in setup[1].rglob('complete.json')
+                      if json.loads(p.read_text())['iteration'] == result['iteration'])
+    checkpoint.unlink()
+    monkeypatch.setattr(iterate, 'Client', lambda *a, **k: pytest.fail('inference on replay'))
+    assert run(setup) == result
+    assert all(p.read_bytes() == value for p, value in before.items())
+
+
+@pytest.mark.parametrize('missing', [('dev',), ('heldout',), ('dev', 'heldout')])
+def test_missing_cpu_classifier_cache_and_new_availability(setup, missing):
+    stage = configure_cpu_classifier(setup)
+    saved = {}
+    for name in missing:
+        path = setup[0].parent / stage[name]['cache']
+        saved[path] = path.read_bytes()
+        path.unlink()
+    result = run(setup)
+    assert result['cpu_classifier'] == 'not available'
+    assert result['fusion']['stages'] == ['rules', 'maya']
+    report = next(p for p in setup[2].glob('*.md') if '000002' in p.name)
+    assert 'cpu-classifier: not available' in report.read_text()
+    for path, contents in saved.items():
+        path.write_bytes(contents)
+    available = run(setup)
+    assert available['iteration'] == 3
+    assert available['cpu_classifier'] == 'available'
+    assert available['identity_sha256'] != result['identity_sha256']
+
+
+def test_corrupt_cpu_classifier_cache_fails_before_inference(setup):
+    stage = configure_cpu_classifier(setup)
+    (setup[0].parent / stage['dev']['cache']).write_text('')
+    FakeClient.calls = 0
+    with pytest.raises(ValueError, match='cpu_classifier cache checksum mismatch'):
+        run(setup)
+    assert FakeClient.calls == 0
+
+
+def test_missing_cpu_classifier_chunk_fails_without_fabrication(setup):
+    config = json.loads(setup[0].read_text())
+    config['split']['heldout_families'] = []
+    config['sample_cap'] = 25
+    setup[0].write_text(json.dumps(config))
+    stage = configure_cpu_classifier(setup)
+    path = setup[0].parent / stage['dev']['cache']
+    path.write_text('')
+    config = json.loads(setup[0].read_text())
+    config['cpu_classifier']['dev']['cache_sha256'] = iterate.digest(path)
+    setup[0].write_text(json.dumps(config))
+    with pytest.raises(ValueError, match='missing required cached score'):
+        run(setup)
+    assert not list(setup[1].glob('runs/iteration-000002-*-fused/manifest.json'))
+
+
+@pytest.mark.parametrize('chunk,overlap', [(0, 0), (12, 12), (12, -1), (True, 0), (12, 1.5)])
+def test_invalid_cpu_classifier_windows_before_inference(setup, chunk, overlap):
+    configure_cpu_classifier(setup)
+    config = json.loads(setup[0].read_text())
+    config['cpu_classifier'].update(chunk_chars=chunk, overlap_chars=overlap)
+    setup[0].write_text(json.dumps(config))
+    FakeClient.calls = 0
+    with pytest.raises(ValueError, match='chunk_chars > overlap_chars'):
+        run(setup)
+    assert FakeClient.calls == 0
