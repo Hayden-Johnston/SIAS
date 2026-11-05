@@ -126,7 +126,7 @@ detection and false-positive rates, denominators and 95% Wilson intervals. Top-l
 are the fused metrics. `evaluation_split: "held_out"` declares these as held-out results; the
 runner also supports train and validation runs and does not establish split hygiene or approval.
 Use approved held-out data to measure detection improvements; synthetic tests prove replay
-behavior only. Fusion settings are pinned in the run identity (runner version 3).
+behavior only. Fusion settings are pinned in the run identity (runner version 5).
 
 Every stage now requires a complete cache for the supplied dataset, including rows caught by
 another stage. Missing scores fail before output replacement; no model calls fill gaps. Older
