@@ -78,3 +78,37 @@ def test_manifest_no_attack_rows(tmp_path):
     assert "| no_attacks | 0 | yes |" in result
     # All channel/technique cells are 0 GAP (benign-only, no attacks)
     assert "| no_attacks |" + " 0 GAP |" * 7 in result
+
+
+def test_generation_targets_gap_low_unknown_order_and_aggregate(tmp_path):
+    manifest = {
+        "labels": {"0": 100, "1": 100},
+        "channels": {key: 20 for _, key in coverage.CHANNELS},
+        "attack_channels": {key: 20 for _, key in coverage.CHANNELS},
+        "techniques": {key: 20 for _, key in coverage.TECHNIQUES},
+    }
+    manifest["attack_channels"].update(direct=0, email=19)
+    manifest["techniques"].update(roleplay=0, encoding=19)
+    path = tmp_path / "coverage.json"
+    path.write_text(json.dumps(manifest))
+    expected = [
+        {"channel": channel, "technique": technique}
+        for channel in sorted(key for _, key in coverage.CHANNELS)
+        for technique in sorted(key for _, key in coverage.TECHNIQUES)
+        if channel in {"direct", "email"} or technique in {"roleplay", "encoding"}
+    ]
+    assert coverage.generation_targets([path]) == {"targets": expected}
+    output = tmp_path / "targets.json"
+    subprocess.run([sys.executable, str(SCRIPT), str(path), "--targets-output", str(output)],
+                   capture_output=True, check=True)
+    assert json.loads(output.read_text()) == {"targets": expected}
+    # Marginals add across manifests: two LOW counts of 19 are sufficient coverage.
+    manifest["attack_channels"]["direct"] = 19
+    manifest["techniques"]["roleplay"] = 19
+    path.write_text(json.dumps(manifest))
+    assert coverage.generation_targets([path, path]) == {"targets": []}
+    # Ambiguous channel counts do not establish GAP/LOW.
+    del manifest["attack_channels"]
+    path.write_text(json.dumps(manifest))
+    assert coverage.generation_targets([path, path]) == {"targets": []}
+    assert coverage.generation_targets([]) == {"targets": []}

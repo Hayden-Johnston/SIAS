@@ -166,3 +166,59 @@ def test_replay_only_cache_miss_and_cached_bytes(tmp_path):
     assert generate(tmp_path, **options, replay_only=True) == result
     assert all(p.read_bytes() == value for p, value in before.items())
     assert client.calls == 2
+
+
+def test_coverage_selection_order_cap_and_replay(tmp_path):
+    targets = tmp_path / 'targets.json'
+    selected = [
+        {'channel': 'email', 'technique': 'roleplay'},
+        {'channel': 'direct', 'technique': 'override'},
+        {'channel': 'direct', 'technique': 'encoding'},
+    ]
+    targets.write_text(json.dumps({'targets': selected + selected}))
+    client = FakeClient()
+    options = {'model': 'fixture', 'timestamp': STAMP, 'client': client, 'coverage': targets,
+               'carrier_chars': 0, 'groups': 2}
+    result = generate(tmp_path / 'output', **options)
+    assert result['records'] == 8
+    assert client.calls == 2
+    requests = [json.loads(json.loads(key)[1][1]['content']) for key in client.jobs]
+    assert [(r['channel'], r['technique']) for r in requests] == [
+        ('direct', 'encoding'), ('direct', 'override')]
+    assert result['generator']['planned_techniques'] == {'encoding': 1, 'override': 1}
+    targets.write_text(json.dumps({'targets': list(reversed(selected))}))
+    assert generate(tmp_path / 'output', **options, replay_only=True) == result
+    assert client.calls == 2
+    plan = generate(tmp_path / 'unused', **{**options, 'groups': 50}, dry_run=True)
+    assert plan['groups'] == 3  # Visit each selected pair once; never cycle to fill the cap.
+    assert not (tmp_path / 'unused').exists()
+
+
+def test_coverage_no_gaps_never_constructs_client_or_writes(tmp_path, monkeypatch, capsys):
+    from data_processing import generate as module
+
+    targets = tmp_path / 'targets.json'
+    targets.write_text('{"targets": []}')
+    monkeypatch.setattr(module, 'Client', lambda *a, **kw: pytest.fail('constructed client'))
+    monkeypatch.setattr('sys.argv', [
+        'generate', '--model', 'fixture', '--timestamp', STAMP,
+        '--coverage', str(targets), '--max', '2', '--output-dir', str(tmp_path / 'unused')])
+    module.main()
+    plan = json.loads(capsys.readouterr().out)
+    assert plan['groups'] == plan['expected_records'] == 0
+    assert plan['planned_channels'] == plan['planned_techniques'] == {}
+    assert not (tmp_path / 'unused').exists()
+
+
+@pytest.mark.parametrize('value', [[], {}, {'targets': None}, {'targets': [{}]},
+                                  {'targets': [{'channel': 'private-invalid', 'technique': []}]}])
+def test_invalid_coverage_stops_without_calls(tmp_path, value):
+    targets = tmp_path / 'targets.json'
+    targets.write_text(json.dumps(value))
+    client = FakeClient()
+    with pytest.raises(ValueError, match='coverage') as exc:
+        generate(tmp_path / 'unused', model='fixture', timestamp=STAMP,
+                 coverage=targets, client=client)
+    assert 'private-invalid' not in str(exc.value)
+    assert not client.batches
+    assert not (tmp_path / 'unused').exists()

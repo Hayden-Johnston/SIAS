@@ -113,7 +113,7 @@ def records(reply, job, timestamp, source, chars):
 
 def generate(output_dir, *, model, timestamp, client=None, seeds=None, groups=50,
              batch_size=1, max_tokens=2048, carrier_chars=8192, dry_run=False,
-             replay_only=False):
+             replay_only=False, coverage=None):
     for name, value in [('groups', groups), ('batch_size', batch_size),
                         ('max_tokens', max_tokens), ('carrier_chars', carrier_chars)]:
         if type(value) is not int or value < (0 if name == 'carrier_chars' else 1):
@@ -126,8 +126,24 @@ def generate(output_dir, *, model, timestamp, client=None, seeds=None, groups=50
               'seeds_sha256': digest(seed_texts), 'source': source, 'groups': groups,
               'max_tokens': max_tokens, 'carrier_chars': carrier_chars,
               'producer_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
-    run_id = digest(config)
     pairs = list(itertools.product(sorted(CHANNELS), sorted(TECHNIQUES)))
+    if coverage is not None:
+        targets = json.loads(Path(coverage).read_text(encoding='utf-8'))
+        if (not isinstance(targets, dict) or set(targets) != {'targets'}
+                or not isinstance(targets['targets'], list)):
+            raise ValueError('coverage requires a targets list')
+        selected = set()
+        for target in targets['targets']:
+            if (not isinstance(target, dict) or set(target) != {'channel', 'technique'}
+                    or not isinstance(target['channel'], str)
+                    or not isinstance(target['technique'], str)
+                    or target['channel'] not in CHANNELS or target['technique'] not in TECHNIQUES):
+                raise ValueError('coverage requires valid channel/technique targets')
+            selected.add((target['channel'], target['technique']))
+        pairs = sorted(selected)
+        config['coverage_targets'] = pairs
+        groups = min(groups, len(pairs))
+    run_id = digest(config)
     jobs, prompts = [], []
     for i in range(groups):
         channel, technique = pairs[i % len(pairs)]
@@ -143,7 +159,7 @@ def generate(output_dir, *, model, timestamp, client=None, seeds=None, groups=50
             'evaluator_approved': False,
             'planned_channels': dict(Counter(j['channel'] for j in jobs)),
             'planned_techniques': dict(Counter(j['technique'] for j in jobs))}
-    if dry_run:
+    if dry_run or not jobs:
         # No client construction, submission, cache mutation or model calls.
         return plan
     output_dir = Path(output_dir) / run_id
@@ -189,7 +205,10 @@ def main():
     parser.add_argument('--model', required=True)
     parser.add_argument('--timestamp', required=True)
     parser.add_argument('--seeds', type=Path, help='local JBB snapshot with Goal column')
-    parser.add_argument('--groups', type=int, default=50, help='maximum generation requests')
+    parser.add_argument('--groups', '--max', type=int, default=50,
+                        help='maximum generation requests')
+    parser.add_argument('--coverage', type=Path,
+                        help='GAP/LOW targets JSON from ops/coverage.py --targets-output')
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--max-tokens', type=int, default=2048)
     parser.add_argument('--carrier-chars', type=int, default=8192,
