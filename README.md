@@ -213,7 +213,14 @@ Rules score every augmented dev (validation) and heldout row. The queued Maya cl
 only a deterministic hash-selected sample of each split: `sample_cap` is 1–25 per split, at most
 50 classifier prompts per iteration. Each stage/split gets a separate numbered run manifest under
 the configured data directory's `runs/`, visible in dashboard Metrics, and a dated report in
-`reports/`. These are independent stage metrics, with Maya rates applying only to its sample.
+`reports/`. Rules retain full-split metrics; Maya and fused rules+Maya rates apply only to
+the capped sample. Fusion reuses cached scores, selecting weights on the dev sample with the
+existing `{0, 0.5, 1}` sweep at threshold 0.5 and observed `fusion_fpr_cap` (default 0.0002).
+If dev lacks either class, fusion is reported unavailable. The report includes counts and 95%
+Wilson intervals, technique slices, and held-out techniques absent from the full scoring dev
+split (including augmentation). It states held-out detection/FPR deltas against the single stage
+with highest detection on the same sample (ties: lower FPR, then name). This comparator is
+descriptive; held-out never selects fusion weights. Small samples cannot establish the target FPR.
 Labels are exploratory source labels (`evaluator_approved: false`); no model scores are fabricated
 for unsampled rows. Full split counts and the cap are recorded in
 `runs/.iterations/*/complete.json`.

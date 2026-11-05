@@ -343,3 +343,101 @@ def test_augmentation_cannot_borrow_padding_from_other_splits(setup):
         run(setup)
     assert FakeClient.calls == 0
     assert not list(setup[1].rglob('complete.json'))
+
+
+def test_fused_sample_sweep_slices_and_replay(setup, monkeypatch):
+    from data_processing.run import rate
+
+    config = json.loads(setup[0].read_text())
+    config['split']['heldout_families'] = []
+    config['sample_cap'] = 25
+    config['fusion_fpr_cap'] = 0
+    setup[0].write_text(json.dumps(config))
+    result = run(setup)
+    summary = result['fusion']
+    assert summary['status'] == 'complete'
+    assert summary['dev']['weights'] == {'maya': 0, 'rules': 0}
+    assert summary['held_out_delta_vs_best_single'] == {'detection': 0, 'false_positive': 0}
+    work = next(setup[1].glob('runs/.iterations/*/state.json')).parent
+    fused = json.loads((setup[1] / 'runs/iteration-000001-held_out-fused/manifest.json').read_text())
+    assert fused['records'] <= 25
+    assert fused['iteration_fusion'] == summary
+    n = fused['metrics']['detection']['n']
+    assert n > 0
+    assert fused['metrics']['detection'] == rate(0, n)
+    assert fused['slices']['novel_technique'] == []
+    assert fused['slices']['by_technique']['novel']['detection'] == rate(0, n)
+    # Same sampled IDs and original measured latencies, no new rule scoring.
+    full = {r['id']: r for _, r in iterate.read_rows(work / 'held_out-rules-scores.jsonl')}
+    subset = [r for _, r in iterate.read_rows(work / 'held_out-sample-rules-scores.jsonl')]
+    assert len(subset) == fused['records']
+    assert all(r == full[r['id']] for r in subset)
+    assert FakeClient.batches == [25, fused['records']]
+    report = next(setup[2].glob('*.md')).read_text()
+    assert 'held_out_delta_vs_best_single' in report and 'ci95' in report
+    # Removing only the final checkpoint must replay byte-identically with no inference.
+    before = {p: p.read_bytes() for p in setup[1].rglob('*') if p.is_file()}
+    (work / 'complete.json').unlink()
+    monkeypatch.setattr(iterate, 'Client', lambda *a, **k: pytest.fail('inference on replay'))
+    monkeypatch.setattr(iterate.rules, 'write_cache', lambda *a: pytest.fail('rule rescoring'))
+    assert run(setup) == result
+    assert all(p.read_bytes() == value for p, value in before.items())
+
+
+def test_iteration_novel_techniques_use_full_dev_and_bind_held_checksum(setup):
+    result = run(setup)
+    assert result['fusion']['status'].startswith('unavailable:')
+    manifests = [json.loads(p.read_text()) for p in setup[1].glob('runs/iteration-*/manifest.json')]
+    for m in manifests:
+        if m['evaluation_split'] == 'held_out':
+            assert {g['technique'] for g in m['slices']['novel_technique']} == set(
+                m['slices']['by_technique'])
+            for group in m['slices']['novel_technique']:
+                assert group['detection']['n'] == group['n']
+                assert group['detection']['method'] == 'wilson'
+    work = next(setup[1].glob('runs/.iterations/*/state.json')).parent
+    provenance = json.loads((work / 'held_out-maya-split.json').read_text())
+    assert provenance['splits']['dev'] == json.loads((work / 'validation-rules.json').read_text())
+    assert provenance['splits']['heldout']['output_sha256'] == iterate.digest(work / 'held_out-maya.jsonl')
+
+
+@pytest.mark.parametrize('cap', [-1, 1.1, True, None])
+def test_invalid_fusion_fpr_cap_before_inference(setup, cap):
+    config = json.loads(setup[0].read_text())
+    config['fusion_fpr_cap'] = cap
+    setup[0].write_text(json.dumps(config))
+    with pytest.raises(ValueError, match='fusion FPR cap'):
+        run(setup)
+    assert FakeClient.calls == 0
+
+
+def test_tiny_fusion_fixture_complementary_scores_and_missing_cache(tmp_path, monkeypatch):
+    from test_sweep import config
+
+    from data_processing.run import rate
+
+    configs = {}
+    for evaluation in ('validation', 'held_out'):
+        path = config(tmp_path / evaluation, evaluation, [[1, 0, 0, 0], [0, 1, 0.9, 0]])
+        original = json.loads(path.read_text())
+        for name, stage in zip(('rules', 'maya'), original['stages']):
+            stage = stage | {'name': name, 'cache': str(path.parent / stage['cache'])}
+            configs[f'{evaluation}-{name}'] = original | {
+                'run_id': evaluation + '-' + name, 'stages': [stage],
+                'dataset': str(path.parent / 'dataset.jsonl'),
+                'dataset_manifest': str(path.parent / 'manifest.json')}
+    monkeypatch.setattr(iterate, 'Client', lambda *a, **k: pytest.fail('inference'))
+    result = iterate.fused_runs(tmp_path, tmp_path / 'runs', configs, 0)
+    assert result['dev']['weights'] == {'maya': 0.5, 'rules': 0.5}
+    assert result['fused_metrics']['detection'] == rate(2, 2)
+    assert result['single_metrics']['detection'] == rate(1, 2)
+    assert result['fused_metrics']['false_positive'] == rate(0, 2)
+    assert result['held_out_delta_vs_best_single'] == {'detection': 0.5, 'false_positive': 0}
+    before = {p: p.read_bytes() for p in (tmp_path / 'runs').rglob('*') if p.is_file()}
+    assert iterate.fused_runs(tmp_path, tmp_path / 'runs', configs, 0) == result
+    assert all(p.read_bytes() == value for p, value in before.items())
+    cache = Path(configs['held_out-rules']['stages'][0]['cache'])
+    cache.write_text('')
+    with pytest.raises(ValueError, match='missing required cached score'):
+        iterate.fused_runs(tmp_path, tmp_path / 'runs', configs, 0)
+    assert all(p.read_bytes() == value for p, value in before.items())
