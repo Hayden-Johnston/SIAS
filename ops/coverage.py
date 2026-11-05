@@ -37,6 +37,8 @@ def cell(count):
 
 def channel_attacks(manifest, channel):
     """Channel totals include benign rows; only report an exact attack count."""
+    if "attack_channels" in manifest:
+        return manifest["attack_channels"].get(channel, 0)
     count = manifest["channels"].get(channel, 0)
     attacks = manifest["labels"].get("1", 0)
     benign = manifest["labels"].get("0", 0)
@@ -53,7 +55,7 @@ def report(paths):
         "GAP = zero; LOW = fewer than 20 rows; UNKNOWN = not derivable from the manifest.",
         "Source approval does not imply evaluator approval or permission to publish.",
         "Channel totals include benign rows: ambiguous attack counts are UNKNOWN.",
-        "Long context is a length property; these manifests contain no length counts.",
+        "Long context here means >=8192 characters; missing attack length counts are UNKNOWN.",
         "Novel / unspecified is the loader's fallback, not proof of a novel jailbreak.",
         "Technique columns overlap; do not sum them.",
         "",
@@ -74,7 +76,8 @@ def report(paths):
                 if heading == "Techniques":
                     count = manifest["techniques"].get(key, 0)
                 elif key is None:
-                    count = None if manifest["labels"].get("1", 0) else 0
+                    count = (manifest["attack_lengths"].get("8192+", 0) if "attack_lengths" in manifest
+                             else None if manifest["labels"].get("1", 0) else 0)
                 else:
                     count = channel_attacks(manifest, key)
                 counts.append(cell(count))

@@ -351,14 +351,16 @@ Local loaders and measured import counts for these sources are documented in
 JBB is catalogued as seeds only and contributes no scored rows. Imports still require evaluator review.
 
 No public source covers long context, documents, tool output, code comments or hard negatives well.
-Those come from the red team and must be approved by the evaluator. Generated data is published only
-after review.
+Offline [synthetic augmentation](docs/datasets.md#synthetic-channel-and-long-context-augmentation)
+can add document, email, tool-output and long-context fixtures within an existing split. These are
+not real-world attacks. Synthetic and red-team rows must be approved by the evaluator. Generated
+data is published only after review.
 
 Offline [taxonomy coverage](reports/2026-11-04-dataset-coverage.md) from the approved source
 manifests shows no document, tool-output, code-comment or multi-turn attack rows, and no explicit
 roleplay, encoding, delimiter-spoof, payload-split or many-shot annotations. Long-context coverage
-is unknown because dataset manifests do not record lengths. All source rows still await evaluator
-approval; `novel` includes unspecified techniques. Refresh the table without reading payloads:
+is unknown in those source manifests; augmentation manifests record exact attack length counts.
+All source rows still await evaluator approval; `novel` includes unspecified techniques. Refresh the table without reading payloads:
 
 ```sh
 python3 ops/coverage.py

@@ -256,3 +256,46 @@ duplicate and excluded counts, and the source role. The normalizer's `source_sha
 the converted intermediate JSONL; `loader.raw_sha256` hashes the original files. Manifests
 contain aggregates only and retain `evaluator_approved: false`. The output checksum remains
 the completion check. To replay, use the same files, order, loader version, revision and timestamp.
+
+## Synthetic channel and long-context augmentation
+
+After splitting, augment **one split at a time**, offline:
+
+```sh
+uv run python -m data_processing.augment data/splits/train.jsonl data/augmented/train.jsonl \
+  --dataset-manifest data/splits/split_manifest.json --seed 47
+python3 ops/coverage.py data/augmented/train.manifest.json
+```
+
+The input filename selects its entry in `split_manifest.json`; checksum, schema-v2 rows,
+unique IDs and record count are validated before output is replaced. A single-dataset manifest
+with `split` (`train`, `dev`, `test`, `heldout`) and matching checksum/count is also accepted.
+An unsplit normalization manifest is rejected: run the split command first.
+
+Original rows remain in order. Each attack gets four synthetic variants: fixed document, email
+and tool-output carriers, and a long-context document. Each variant also gets a benign control
+with a fixed project note replacing the attack. `source` is `augmented:<kind>` (`long_context`
+for the padded variant). SHA-256 of source ID and seed selects start/middle/end insertion;
+IDs are deterministic hashes. Spans cover the entire original `text` exactly, in Unicode character
+offsets, including serialized multi-turn text when present. Techniques are copied for attacks;
+controls have empty techniques/spans. Family and group remain tied to the source attack, including
+controls, and the manifest pins their existing split. **Do not re-split augmented output.**
+
+Long variants use 8192 characters of padding drawn from benign rows in the same input file,
+repeated in input order and truncated only in the padding. They never read another split.
+An attack-containing split without benign rows fails rather than borrowing across splits.
+Both padded attacks and their controls exceed 8192 characters. This is a synthetic character
+length threshold, not a model token budget or the scoring run's separate length buckets.
+
+The output manifest (`OUT` with suffix `.manifest.json`) is written last, contains no text or
+paths, and includes seed, split, input/manifest/output checksums, totals by label/channel/technique/
+family, `lengths` and exact `attack_channels`/`attack_lengths`. Length keys are `0-8191` and `8192+`.
+`coverage.py` uses these exact attack counts; older manifests retain UNKNOWN where needed.
+Files are replaced atomically individually; verify the output checksum before use. Concurrent
+writers are unsupported. Rows and output are held in memory.
+
+These are synthetic fixtures, **not real-world channel attacks or evidence of detection quality**.
+Labels use `synthetic-augmentation`, evaluator approval is false, and new rows are nonpublishable.
+Embedded provenance declarations are retained, with padding license declarations listed for long
+variants; augmentation supplies no new publication rights. Independent evaluator review is still
+required. The benign controls are structurally matched controls, not independently judged negatives.
