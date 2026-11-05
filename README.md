@@ -243,6 +243,9 @@ Optional `cpu_classifier` settings add precomputed dev/heldout chunk score cache
 `data_processing.model_stage` ([configuration](docs/pipeline.md#optional-iteration-cpu-classifier)).
 Both caches must exist; otherwise the report says `cpu-classifier: not available`. This adds no
 CPU inference to the iteration; available probe caches can participate alongside the classifier.
+Alternatively, `cpu_classifier_run` (`config`, `server_config`, `threshold`; exclusive with `cpu_classifier`)
+scores the same capped sample through the CPU evaluator via the proxy (never Maya), caches the chunks so reruns
+need no server, and reports fusion with and without the classifier. See `reports/2026-11-05-iteration-cpu-scoring.md`.
 
 An optional `red_team` section (see `iterate.example.json`) enables a capped generation and
 CPU evaluator round before splitting. It defaults off. Set `enabled: true`, `groups` (each request
