@@ -385,6 +385,8 @@ All source rows still await evaluator approval; `novel` includes unspecified tec
 python3 ops/coverage.py
 # Select other aggregate manifests and optionally save the Markdown table:
 python3 ops/coverage.py source.manifest.json --output reports/coverage.md
+# Export GAP/LOW targets for generation (see docs/datasets.md):
+python3 ops/coverage.py --targets-output coverage-targets.json
 ```
 
 ## Roadmap
