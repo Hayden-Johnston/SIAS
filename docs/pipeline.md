@@ -161,6 +161,33 @@ deltas (chosen minus all-ones). Undefined held-out rates and deltas are null. Re
 inputs produce identical output. Split declarations do not prove family/group separation: use
 properly separated, approved splits, and do not tune by repeatedly inspecting held-out results.
 
+## Replay-only stage ablation
+
+```sh
+uv run python -m data_processing.ablation data/dev-run.json data/heldout-run.json \
+  --fpr-cap 0.0002 --output runs/stage-ablation.json
+```
+
+Use the same configs and constraints as the weight sweep above, with at least two stages.
+The script fits the full fusion on dev, removes each stage in sorted name order, and refits
+all remaining weights on dev using the same grid, observed FPR cap and tie-breaking rules.
+Existing configured weights are ignored. Every fit finishes before held-out inputs are opened;
+held-out data never selects weights. No inference or server operations occur.
+
+Printed JSON and optional atomic output include input identities and approval flags, `full`
+weights/metrics and `removed_stages` keyed by the removed stage name. Each entry contains
+`weights`, `dev_metrics`, `held_out_metrics` and held-out `delta_vs_full` for detection and
+false positives (removed-stage fit minus full fit, in rate fractions). Metrics include confusion
+counts, denominators and 95% Wilson intervals; deltas are point estimates, not CI estimates.
+Undefined held-out rates and their deltas are null. Removing a stage can reactivate a previously
+zero-weight stage, so these deltas measure the refitted system rather than isolated stage scores.
+
+Identical inputs produce identical JSON bytes. Invalid/missing caches, incompatible settings or
+infeasible dev fits fail without replacing output; input files cannot be overwritten. Work grows
+as `3 ** stage_count + stage_count * 3 ** (stage_count - 1)` dev candidates. Results describe
+only the scored rows and inherited labels/approval status; split declarations do not prove split
+hygiene. Use held-out ablations for reporting, not repeated tuning.
+
 ## Miss analysis
 
 ```sh
