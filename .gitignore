@@ -44,3 +44,4 @@ evaluated/
 
 # Local CPU evaluator launch configuration
 evaluator.local.json
+model-stage.local.json
