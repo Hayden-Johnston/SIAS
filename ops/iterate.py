@@ -6,7 +6,7 @@ import fcntl
 import hashlib
 from pathlib import Path
 
-from data_processing import evaluate, generate, rules, sources, split
+from data_processing import augment, evaluate, generate, rules, sources, split
 from data_processing.normalize import canonical_json, normalize
 from data_processing.run import (
     atomic_write,
@@ -98,8 +98,10 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
     required = {'sources', 'split', 'sample_cap', 'model', 'max_tokens',
                 'pipeline_version', 'rule_threshold', 'model_threshold'}
     if (not isinstance(config, dict) or not required <= set(config)
-            or set(config) - required - {'red_team'}):
+            or set(config) - required - {'red_team', 'augment'}):
         raise ValueError('iteration config must contain exactly the documented fields')
+    if type(config.get('augment', True)) is not bool:
+        raise ValueError('augment must be boolean')
     options = config.get('red_team', {'enabled': False})
     if not isinstance(options, dict) or type(options.get('enabled')) is not bool:
         raise ValueError('red_team requires a boolean enabled field')
@@ -136,9 +138,9 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                 or not isinstance(source['inputs'], list) or not source['inputs']):
             raise ValueError('invalid source config')
         inputs.append([config_path.resolve().parent / path for path in source['inputs']])
-    # Include producer code so a changed loader, split, rule or prompt refreshes outputs.
+    # Include producer code so a changed loader, split, augmenter, rule or prompt refreshes outputs.
     identity = {'config': config, 'raw': [[digest(p) for p in paths] for paths in inputs],
-                'code': [digest(p) for p in (__file__, sources.__file__, split.__file__,
+                'code': [digest(p) for p in (__file__, sources.__file__, split.__file__, augment.__file__,
                                             rules.__file__, REPO / 'src/data_processing/normalize.py',
                                             REPO / 'src/data_processing/run.py')],
                 'mappings': [digest(p) for p in sorted(
@@ -190,6 +192,25 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
             normalize(combined, work / 'dataset.jsonl', work / 'dataset.json')
             split.split(work / 'dataset.jsonl', work / 'dataset.json',
                         config['split'], work / 'splits')
+        split_counts = load_json(split_path)['splits']
+        augmentation = {'enabled': config.get('augment', True), 'splits': {}}
+        scoring_dir = work / 'splits'
+        if augmentation['enabled']:
+            scoring_dir = work / 'augmented'
+            for source_split in split.SPLITS:
+                output = scoring_dir / f'{source_split}.jsonl'
+                manifest = output.with_suffix('.manifest.json')
+                if not manifest.exists():
+                    # Fixed seed zero; retain source groups and never re-split these outputs.
+                    augment.augment(work / 'splits' / output.name, output, split_path, seed=0)
+                augmented = load_json(manifest)
+                original = split_counts[source_split]
+                augmentation['splits'][source_split] = {
+                    'records': augmented['records'] - original['records'],
+                    'channels': {channel: count - original['channels'].get(channel, 0)
+                                 for channel, count in augmented['channels'].items()
+                                 if count > original['channels'].get(channel, 0)},
+                }
         manifests = []
         # Finish cheap full-split scoring before waiting for any shared Maya calls.
         for name in ('rules', 'maya'):
@@ -197,7 +218,7 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                 stem = f'{evaluation}-{name}'
                 dataset, manifest = work / f'{stem}.jsonl', work / f'{stem}.json'
                 if not manifest.exists():
-                    source = work / 'splits' / f'{source_split}.jsonl'
+                    source = scoring_dir / f'{source_split}.jsonl'
                     if name == 'maya':
                         # Preserve the deterministic hash sample, independently of source order.
                         rows = sorted((r for _, r in read_rows(source)),
@@ -235,6 +256,8 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                   'are in each stage run manifest.'), '']
         lines.append(f"Red-team round: {red_team['status']}; generated {red_team['generated']}, "
                      f"approved {red_team['approved']}; approval rate {red_team['approval_rate']}.")
+        lines.append('Synthetic augmentation (added rows per split/channel): ' +
+                     canonical_json(augmentation))
         for result in manifests:
             m = result['metrics']
             lines.append(f"- {result['evaluation_split']} / {result['stages'][0]['name']}: {result['records']} rows; "
@@ -246,7 +269,8 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
         atomic_write(report, ('\n'.join(lines) + '\n').encode())
         result = state | {'identity_sha256': key, 'pipeline_version': config['pipeline_version'],
                           'runs': [m['run_id'] for m in manifests], 'sample_cap': config['sample_cap'],
-                          'split_counts': load_json(split_path)['splits'], 'red_team': red_team}
+                          'split_counts': split_counts, 'augmentation': augmentation,
+                          'red_team': red_team}
         write_json(work / 'complete.json', result)
         return result
 

@@ -77,19 +77,21 @@ def test_complete_replay_dashboard_and_source_change(setup, monkeypatch):
         name = m['stages'][0]['name']
         source_split = 'dev' if m['evaluation_split'] == 'validation' else 'heldout'
         full_count = first['split_counts'][source_split]['records']
+        full_count += first['augmentation']['splits'][source_split]['records']
         assert full_count > 4
         assert m['records'] == (full_count if name == 'rules' else 4)
         assert m['stages'][0]['reached'] == m['records']
         assert not m['evaluator_approved']
         assert sum(m['metrics'][k] for k in ('tp', 'fp', 'fn', 'tn')) == m['records']
         if name == 'maya':
-            rows = [r for _, r in iterate.read_rows(work / 'splits' / f'{source_split}.jsonl')]
+            rows = [r for _, r in iterate.read_rows(work / 'augmented' / f'{source_split}.jsonl')]
             expected = sorted(rows, key=lambda r: hashlib.sha256(r['id'].encode()).hexdigest())[:4]
             actual = [r for _, r in iterate.read_rows(work / f"{m['evaluation_split']}-maya.jsonl")]
             assert actual == expected
     assert FakeClient.batches == [4, 4]
     before = {p: p.read_bytes() for p in data.rglob('*') if p.is_file()}
     monkeypatch.setattr(iterate.rules, 'write_cache', lambda *a: pytest.fail('rescored rules'))
+    monkeypatch.setattr(iterate.augment, 'augment', lambda *a, **k: pytest.fail('reaugmented'))
     assert run(setup) == first
     assert all(p.read_bytes() == value for p, value in before.items())
     assert FakeClient.calls == 2
@@ -268,3 +270,76 @@ def test_max_cap_limits_total_classifier_prompts(setup):
     setup[0].write_text(json.dumps(config))
     run(setup)
     assert FakeClient.batches == [25, 25]
+
+
+@pytest.mark.parametrize('reserved', [True, False])
+def test_augmentation_preserves_source_groups_families_and_splits(setup, reserved):
+    if not reserved:
+        config = json.loads(setup[0].read_text())
+        config['split']['heldout_families'] = []
+        setup[0].write_text(json.dumps(config))
+    result = run(setup)
+    assert result['augmentation']['enabled'] is True
+    work = next(setup[1].glob('runs/.iterations/*/state.json')).parent
+    seen_groups = {}
+    for name in iterate.split.SPLITS:
+        originals = [r for _, r in iterate.read_rows(work / 'splits' / f'{name}.jsonl')]
+        rows = [r for _, r in iterate.read_rows(work / 'augmented' / f'{name}.jsonl')]
+        assert rows[:len(originals)] == originals
+        attacks = {r['group_id']: r for r in originals if r['label']}
+        count = len(attacks)
+        assert result['augmentation']['splits'][name] == {
+            'records': 8 * count,
+            'channels': {'document': 4 * count, 'email': 2 * count, 'tool_output': 2 * count}
+            if count else {},
+        }
+        for row in rows:
+            group = row['group_id']
+            assert seen_groups.setdefault(group, name) == name
+            if row['source'].startswith('augmented:'):
+                assert row['attack_family'] == attacks[group]['attack_family']
+                assert row['label_source'] == 'synthetic-augmentation'
+                assert row['publishable'] == 'no'
+                if reserved:
+                    assert name == 'heldout'
+        # Regeneration from the original split reproduces both dataset and manifest bytes.
+        regenerated = work / 'regenerated' / f'{name}.jsonl'
+        iterate.augment.augment(work / 'splits' / f'{name}.jsonl', regenerated,
+                                work / 'splits/split_manifest.json', seed=0)
+        assert regenerated.read_bytes() == (work / 'augmented' / regenerated.name).read_bytes()
+        assert regenerated.with_suffix('.manifest.json').read_bytes() == (
+            work / 'augmented' / f'{name}.manifest.json').read_bytes()
+    assert 'Synthetic augmentation' in next(setup[2].glob('*.md')).read_text()
+
+
+def test_augmentation_disabled(setup, monkeypatch):
+    config = json.loads(setup[0].read_text())
+    config['augment'] = False
+    setup[0].write_text(json.dumps(config))
+    monkeypatch.setattr(iterate.augment, 'augment', lambda *a, **k: pytest.fail('augmented'))
+    result = run(setup)
+    assert result['augmentation'] == {'enabled': False, 'splits': {}}
+    work = next(setup[1].glob('runs/.iterations/*/state.json')).parent
+    assert not (work / 'augmented').exists()
+    for source_split, evaluation in [('dev', 'validation'), ('heldout', 'held_out')]:
+        assert (work / 'splits' / f'{source_split}.jsonl').read_bytes() == (
+            work / f'{evaluation}-rules.jsonl').read_bytes()
+
+
+@pytest.mark.parametrize('value', [0, 1, 'true', None, {}])
+def test_invalid_augmentation_option(setup, value):
+    config = json.loads(setup[0].read_text())
+    config['augment'] = value
+    setup[0].write_text(json.dumps(config))
+    with pytest.raises(ValueError, match='augment must be boolean'):
+        run(setup)
+    assert FakeClient.calls == 0
+
+
+def test_augmentation_cannot_borrow_padding_from_other_splits(setup):
+    raw = setup[0].parent / 'raw.jsonl'
+    raw.write_text(json.dumps({'text': 'synthetic attack fixture', 'label': 1}) + '\n')
+    with pytest.raises(ValueError, match='benign rows in the same split'):
+        run(setup)
+    assert FakeClient.calls == 0
+    assert not list(setup[1].rglob('complete.json'))

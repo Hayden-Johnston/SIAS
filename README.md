@@ -203,7 +203,13 @@ uv run python ops/iterate.py                 # defaults to iterate.local.json
 ```
 
 The iteration refreshes source loaders and family splits when inputs, configuration or producer
-code change. Rules score every dev (validation) and heldout row. The queued Maya classifier scores
+code change. Offline synthetic augmentation defaults on (`"augment": false` disables it): after
+normalization and splitting, each split independently gains document, email, tool-output and
+long-context attack/control pairs with fixed seed 0. Source families/groups and split assignments
+are preserved; padding comes only from benign rows in that split. An attack-containing split
+without benign rows fails. Added row counts per channel/split appear in the iteration completion
+manifest and report; labels remain synthetic and unapproved.
+Rules score every augmented dev (validation) and heldout row. The queued Maya classifier scores
 only a deterministic hash-selected sample of each split: `sample_cap` is 1–25 per split, at most
 50 classifier prompts per iteration. Each stage/split gets a separate numbered run manifest under
 the configured data directory's `runs/`, visible in dashboard Metrics, and a dated report in
