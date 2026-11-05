@@ -6,13 +6,14 @@ import fcntl
 import hashlib
 from pathlib import Path
 
-from data_processing import augment, evaluate, generate, rules, sources, split
+from data_processing import augment, evaluate, generate, rules, sources, split, sweep
 from data_processing.normalize import canonical_json, normalize
 from data_processing.run import (
     atomic_write,
     digest,
     load_json,
     number,
+    rate,
     read_rows,
     replay,
 )
@@ -92,13 +93,62 @@ def red_team_round(work, config, timestamp):
     return summary
 
 
+def fused_runs(work, runs, configs, fpr_cap):
+    """Replay the common sample only; never fill missing scores with inference."""
+    paths = {}
+    for evaluation in ('validation', 'held_out'):
+        model = configs[f'{evaluation}-maya']
+        rules_stage = configs[f'{evaluation}-rules']['stages'][0].copy()
+        ids = {row['id'] for _, row in read_rows(model['dataset'])}
+        cache = work / f'{evaluation}-sample-rules-scores.jsonl'
+        atomic_write(cache, ''.join(canonical_json(row) + '\n'
+                                   for _, row in read_rows(rules_stage['cache'])
+                                   if row['id'] in ids).encode())
+        rules_stage.update(cache=str(cache.resolve()), cache_sha256=digest(cache))
+        config = model | {'run_id': model['run_id'].removesuffix('maya') + 'fused',
+                          'stages': [rules_stage, *model['stages']],
+                          'fusion': {'threshold': 0.5}}
+        path = work / f'{evaluation}-fused-run.json'
+        write_json(path, config)
+        paths[evaluation] = path
+    dev = load_json(configs['validation-maya']['dataset_manifest'])
+    if not all(dev['labels'].get(label, 0) for label in ('0', '1')):
+        return {'status': 'unavailable: dev sample requires attacks and benign rows',
+                'fpr_cap': fpr_cap, 'held_out_delta_vs_best_single': None, 'manifests': []}
+    selected = sweep.sweep(paths['validation'], paths['held_out'], fpr_cap,
+                           work / 'fusion-sweep.json')
+    manifests = []
+    for path in paths.values():
+        config = load_json(path)
+        config['fusion'] = {'threshold': selected['threshold'], 'weights': selected['dev']['weights']}
+        write_json(path, config)
+        manifests.append(replay(path, runs / config['run_id']))
+    held = manifests[1]
+    # Descriptive best on this held-out sample, not a new weight-selection step.
+    best = min(held['stages'], key=lambda stage: (
+        -(stage['metrics']['detection']['value'] or 0),
+        stage['metrics']['false_positive']['value'] or 0, stage['name']))
+    comparison = {'best_single_stage': best['name'], 'single_metrics': best['metrics'],
+                  'fused_metrics': held['metrics'],
+                  'held_out_delta_vs_best_single': {
+                      metric: (held['metrics'][metric]['value'] - best['metrics'][metric]['value']
+                               if held['metrics'][metric]['value'] is not None else None)
+                      for metric in ('detection', 'false_positive')}}
+    summary = {'status': 'complete', 'fpr_cap': fpr_cap, 'dev': selected['dev'],
+               'threshold': selected['threshold'], **comparison}
+    for manifest in manifests:
+        manifest['iteration_fusion'] = summary
+        write_json(runs / manifest['run_id'] / 'manifest.json', manifest)
+    return summary | {'manifests': manifests}
+
+
 def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
     config_path, data, reports = map(Path, (config_path, data, reports))
     config = load_json(config_path)
     required = {'sources', 'split', 'sample_cap', 'model', 'max_tokens',
                 'pipeline_version', 'rule_threshold', 'model_threshold'}
     if (not isinstance(config, dict) or not required <= set(config)
-            or set(config) - required - {'red_team', 'augment'}):
+            or set(config) - required - {'red_team', 'augment', 'fusion_fpr_cap'}):
         raise ValueError('iteration config must contain exactly the documented fields')
     if type(config.get('augment', True)) is not bool:
         raise ValueError('augment must be boolean')
@@ -127,6 +177,7 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
             raise ValueError(f'{key} must be a nonempty string')
     for key in ('rule_threshold', 'model_threshold'):
         number(config[key], key, 1)
+    number(config.get('fusion_fpr_cap', 0.0002), 'fusion FPR cap', 1)
     split.validate_split_config(config['split'])
     if not isinstance(config['sources'], list) or not config['sources']:
         raise ValueError('sources must be a nonempty list')
@@ -142,7 +193,7 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
     identity = {'config': config, 'raw': [[digest(p) for p in paths] for paths in inputs],
                 'code': [digest(p) for p in (__file__, sources.__file__, split.__file__, augment.__file__,
                                             rules.__file__, REPO / 'src/data_processing/normalize.py',
-                                            REPO / 'src/data_processing/run.py')],
+                                            REPO / 'src/data_processing/run.py', sweep.__file__)],
                 'mappings': [digest(p) for p in sorted(
                     (Path(sources.__file__).parent / 'source_mappings').glob('*.json'))]}
     if options['enabled']:
@@ -211,7 +262,7 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                                  for channel, count in augmented['channels'].items()
                                  if count > original['channels'].get(channel, 0)},
                 }
-        manifests = []
+        manifests, run_configs = [], {}
         # Finish cheap full-split scoring before waiting for any shared Maya calls.
         for name in ('rules', 'maya'):
             for source_split, evaluation in [('dev', 'validation'), ('heldout', 'held_out')]:
@@ -241,13 +292,25 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                     'run_id': run_id, 'pipeline_version': config['pipeline_version'],
                     'dataset': str(dataset.resolve()), 'dataset_manifest': str(manifest.resolve()),
                     'evaluation_split': evaluation,
+                    'fusion': {'threshold': config['rule_threshold' if name == 'rules'
+                                                   else 'model_threshold']},
                     'stages': [{'name': name, 'version': version,
                                 'threshold': config['rule_threshold' if name == 'rules' else 'model_threshold'],
                                 'cache': str(cache.resolve()), 'cache_sha256': digest(cache)}],
                 }
+                if evaluation == 'held_out':
+                    # Bind the scored subset checksum to full scoring-dev technique counts.
+                    provenance = work / f'{stem}-split.json'
+                    write_json(provenance, {'schema_version': 2, 'splits': {
+                        'dev': load_json(work / 'validation-rules.json'),
+                        'heldout': load_json(manifest)}})
+                    run_config['split_manifest'] = str(provenance.resolve())
+                run_configs[stem] = run_config
                 path = work / f'{stem}-run.json'
                 write_json(path, run_config)
                 manifests.append(replay(path, runs / run_id))
+        fusion = fused_runs(work, runs, run_configs, config.get('fusion_fpr_cap', 0.0002))
+        manifests.extend(fusion.pop('manifests'))
         reports.mkdir(parents=True, exist_ok=True)
         report = reports / f"{state['timestamp'][:10]}-iteration-{state['iteration']:06d}.md"
         lines = [f"# Iteration {state['iteration']}: {config['pipeline_version']}", '',
@@ -255,22 +318,37 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                   'Source labels plus optional evaluator-approved rows. Counts and Wilson intervals '
                   'are in each stage run manifest.'), '']
         lines.append(f"Red-team round: {red_team['status']}; generated {red_team['generated']}, "
-                     f"approved {red_team['approved']}; approval rate {red_team['approval_rate']}.")
+                     f"approved {red_team['approved']}; approval rate {red_team['approval_rate']}; "
+                     + canonical_json(rate(red_team['approved'], red_team['generated'])) + '.')
         lines.append('Synthetic augmentation (added rows per split/channel): ' +
                      canonical_json(augmentation))
         for result in manifests:
             m = result['metrics']
-            lines.append(f"- {result['evaluation_split']} / {result['stages'][0]['name']}: {result['records']} rows; "
+            label = 'fused' if len(result['stages']) > 1 else result['stages'][0]['name']
+            lines.append(f"- {result['evaluation_split']} / {label}: {result['records']} rows; "
                          f"TP {m['tp']}, FP {m['fp']}, FN {m['fn']}, TN {m['tn']}; "
                          f"cached stage latency {sum(s['cached_latency_ms_total'] for s in result['stages']):.3f} ms.")
             sidecar = work / f"{result['run_id'].split('-', 2)[2]}-scores.invalid.json"
             if sidecar.exists():
                 lines.append(f"  Invalid (non-0/1, scored as attack) outputs: {load_json(sidecar)['invalid_outputs']}.")
+        lines.extend(['', '## Fused rules + Maya (same capped sample)', '',
+                      ('Weights selected on dev only. Held-out best single stage uses highest '
+                       'detection, then lowest FPR, then name; this comparison is descriptive.'),
+                      '', canonical_json(fusion),
+                      '', '## Technique and novel-technique slices', '',
+                      ('Novel means absent from full scoring dev, including augmentation. '
+                       'Multi-technique rows appear in multiple slices; small_sample means n < 20.')])
+        for result in manifests:
+            label = 'fused' if len(result['stages']) > 1 else result['stages'][0]['name']
+            lines.extend(['', f"### {result['evaluation_split']} / {label}", '',
+                          canonical_json({'metrics': result['metrics'],
+                                          'by_technique': result['slices']['by_technique'],
+                                          'novel_technique': result['slices']['novel_technique']})])
         atomic_write(report, ('\n'.join(lines) + '\n').encode())
         result = state | {'identity_sha256': key, 'pipeline_version': config['pipeline_version'],
                           'runs': [m['run_id'] for m in manifests], 'sample_cap': config['sample_cap'],
                           'split_counts': split_counts, 'augmentation': augmentation,
-                          'red_team': red_team}
+                          'red_team': red_team, 'fusion': fusion}
         write_json(work / 'complete.json', result)
         return result
 

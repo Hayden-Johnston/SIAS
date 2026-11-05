@@ -37,8 +37,9 @@ def write_config(tmp_path, config):
 def test_example_config_is_valid():
     config = json.loads(EXAMPLE.read_text())
     assert REQUIRED <= set(config)
-    assert set(config) - REQUIRED - {'red_team', 'augment'} == set()
+    assert set(config) - REQUIRED - {'red_team', 'augment', 'fusion_fpr_cap'} == set()
     assert config.get('augment', True) is True
+    assert config['fusion_fpr_cap'] == 0.0002
     assert isinstance(config['sources'], list) and config['sources']
     assert isinstance(config['sample_cap'], int) and config['sample_cap'] >= 1
     assert isinstance(config['max_tokens'], int) and config['max_tokens'] >= 1
