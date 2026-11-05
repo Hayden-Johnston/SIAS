@@ -167,6 +167,29 @@ reports; do not inspect or display raw prompt corpora.
   article quoting one).
 - Mix in public datasets and record their citations for the write-up.
 
+To target coverage gaps using aggregate manifests only:
+
+```sh
+python3 ops/coverage.py source.manifest.json --targets-output coverage-targets.json
+uv run python -m data_processing.generate --model PINNED_CHECKPOINT \
+  --timestamp 2026-11-05T00:00:00Z --coverage coverage-targets.json --max 10 --dry-run
+```
+
+Coverage sums attack counts across the explicitly selected manifests. Select disjoint datasets
+to avoid double counting. A channel/technique pair is selected when either marginal is GAP (zero)
+or LOW (1–19); ambiguous channel counts are UNKNOWN and do not establish a gap. These are
+**marginal gaps, not measured joint channel/technique counts**. Long-context gaps are not selected:
+the generator's existing carrier setting controls length. The JSON contains only `targets`, a list
+of objects with `channel` and `technique`; an empty manifest selection produces no targets.
+
+With `--coverage`, generation visits each selected pair once in lexical channel/technique order,
+removes duplicates, and stops at `--max` (an alias for `--groups`, default 50). Each request produces
+three attack variants and one hard negative, still requiring evaluator approval. An empty target
+list returns a zero-request plan without constructing a client or writing output. The target list
+participates in the run ID; reordering the JSON does not change replay. Without `--coverage`, the
+existing taxonomy/seed cycle is unchanged. Remove `--dry-run` to use the already running endpoint;
+neither coverage export nor dry-run needs inference or server operations.
+
 ## Splits and hygiene
 
 - Reserved **attack families** appear only in heldout, never in train/dev/test.

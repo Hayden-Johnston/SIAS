@@ -46,6 +46,25 @@ def channel_attacks(manifest, channel):
     return lower if lower == upper else None
 
 
+def generation_targets(paths):
+    """Select pairs touching a GAP/LOW marginal; joint counts are not available."""
+    manifests = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+    channels, techniques = set(), set()
+    for _, channel in CHANNELS:
+        counts = [channel_attacks(manifest, channel) for manifest in manifests]
+        if counts and None not in counts and sum(counts) < 20:
+            channels.add(channel)
+    for _, technique in TECHNIQUES:
+        if manifests and sum(m["techniques"].get(technique, 0) for m in manifests) < 20:
+            techniques.add(technique)
+    return {"targets": [
+        {"channel": channel, "technique": technique}
+        for channel in sorted(key for _, key in CHANNELS)
+        for technique in sorted(key for _, key in TECHNIQUES)
+        if channel in channels or technique in techniques
+    ]}
+
+
 def report(paths):
     datasets = [(path.stem, json.loads(path.read_text(encoding="utf-8"))) for path in paths]
     lines = [
@@ -90,12 +109,17 @@ def main():
     parser.add_argument("manifests", nargs="*", type=Path,
                         help="aggregate manifests (default: checked-in approved source manifests)")
     parser.add_argument("--output", type=Path, help="also write the Markdown report to this path")
+    parser.add_argument("--targets-output", type=Path,
+                        help="write GAP/LOW channel/technique generation targets as JSON")
     args = parser.parse_args()
     paths = args.manifests or sorted(
         (Path(__file__).resolve().parents[1] / "reports/dataset-manifests").glob("*.json"))
     result = report(paths)
     if args.output:
         args.output.write_text(result, encoding="utf-8")
+    if args.targets_output:
+        args.targets_output.write_text(
+            json.dumps(generation_targets(paths), sort_keys=True) + "\n", encoding="utf-8")
     print(result, end="")
 
 
