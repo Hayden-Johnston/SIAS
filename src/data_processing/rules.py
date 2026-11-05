@@ -105,6 +105,13 @@ RULES = (
         r"(?:\W+\w+){0,4}\W+(?:all|any|every)\s+"
         r"(?:requests?|questions?|commands?|instructions?)\b"
     )),
+    # Round-3 indirect-channel dev misses: suppression of capability refusals.
+    # Keep the refusal cue within four words of an explicit prohibition;
+    # ordinary requests to omit apologies are not enough.
+    (0.75, re.compile(
+        r"\b(?:never|do not|don't|must not)\s+(?:say|tell|mention)\b"
+        r"(?:\W+\w+){0,4}\W+(?:cannot|can't|unable)\b"
+    )),
     # Encoding is suspicious but also common in benign technical material.
     # Require 32 base64 characters (eight blocks), eight escapes/percent bytes,
     # or sixteen hex bytes. This weak signal also applies to undecodable data.
