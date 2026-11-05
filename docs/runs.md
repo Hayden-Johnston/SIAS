@@ -89,9 +89,9 @@ only supplied caches and never performs inference.
 
 ```sh
 uv run python -m data_processing.rules \
-  /mnt/storage/llm_security/normalized/dev.jsonl \
-  /mnt/storage/llm_security/cache/dev-rules.jsonl \
-  --dataset-manifest /mnt/storage/llm_security/normalized/dev.manifest.json
+  data/normalized/dev.jsonl \
+  data/cache/dev-rules.jsonl \
+  --dataset-manifest data/normalized/dev.manifest.json
 ```
 
 The CLI checks the schema-v2 normalization manifest's checksum and row count, validates
