@@ -1,4 +1,4 @@
-"""Tests for deterministic family-based split assignment."""
+"""Tests for deterministic group-based split assignment."""
 
 import hashlib
 import json
@@ -74,13 +74,13 @@ class SplitTests(unittest.TestCase):
         self.write_input(rows)
         result = self.run_split()
         heldout = self.read_split("heldout")
-        self.assertEqual(len(heldout), 2)
-        self.assertTrue(all(r["attack_family"] == "heldout-fam" for r in heldout))
-        self.assertEqual(result["splits"]["heldout"]["records"], 2)
-        self.assertEqual(result["splits"]["heldout"]["attack_families"], {"heldout-fam": 2})
+        self.assertEqual(sum(r["attack_family"] == "heldout-fam" for r in heldout), 2)
+        self.assertEqual(result["splits"]["heldout"]["attack_families"]["heldout-fam"], 2)
+        for name in ("train", "dev", "test"):
+            self.assertNotIn("heldout-fam", result["splits"][name]["attack_families"])
 
     def test_group_integrity_all_rows_in_same_group_share_split(self):
-        # Multiple variants of the same attack family must all land in the same split.
+        # Multiple variants of the same group must all land in the same split.
         rows = [
             attack_record("fam-a", "g1"),
             attack_record("fam-a", "g1", variant_type="paraphrase", id="att-fam-a-g1-p"),
@@ -89,7 +89,7 @@ class SplitTests(unittest.TestCase):
         ]
         self.write_input(rows)
         self.run_split()
-        # Find which split the family landed in.
+        # Find which split the group landed in.
         found_in = None
         for name in ("train", "dev", "test", "heldout"):
             split_rows = self.read_split(name)
@@ -236,15 +236,18 @@ class SplitTests(unittest.TestCase):
             with self.subTest(config=config), self.assertRaises(ValueError):
                 validate_split_config(config)
 
-    def test_proportions_distribute_all_families(self):
-        # With enough families, all three non-heldout splits should get some.
-        rows = [attack_record(f"fam-{i}", f"g{i}") for i in range(50)]
+    def test_every_split_contains_both_classes_from_non_reserved_groups(self):
+        # One attack family must span splits, while its variant groups stay intact.
+        rows = [attack_record("shared-family", f"attack-{i}") for i in range(200)]
+        rows += [record(id=f"benign-{i}", group_id=f"benign-{i}") for i in range(200)]
         self.write_input(rows)
         result = self.run_split()
-        non_heldout = {n: result["splits"][n]["records"] for n in ("train", "dev", "test")}
-        self.assertEqual(sum(non_heldout.values()), 50)
-        # With 50 families and 60/20/20, all splits should be non-empty.
-        self.assertTrue(all(v > 0 for v in non_heldout.values()))
+        self.assertEqual(sum(s["records"] for s in result["splits"].values()), 400)
+        for entry in result["splits"].values():
+            self.assertGreater(entry["labels"].get("0", 0), 0)
+            self.assertGreater(entry["labels"].get("1", 0), 0)
+            self.assertIn("shared-family", entry["attack_families"])
+        self.assertEqual(result["split_version"], 2)
 
     def test_row_missing_required_field_raises_keyerror(self):
         # split() accesses fields directly without schema validation.

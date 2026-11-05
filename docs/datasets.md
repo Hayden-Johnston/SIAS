@@ -77,8 +77,8 @@ be cut by channel and by length independently.
 
 Rules that tie the fields together:
 
-- `attack_family` stays the split unit: a specific family (a named jailbreak, one generator template,
-  one public source's category), finer than a technique. Benign rows use a benign family name, for
+- `attack_family` identifies reserved held-out families: a specific family (a named jailbreak,
+  one generator template, one public source's category), finer than a technique. Benign rows use a benign family name, for
   example `benign-chat` or `benign-quoted-attack` for security text that quotes an attack.
 - `techniques` describes the attack as it appears in this row's text. An `obfuscated` attack variant
   therefore includes `encoding`; its `plain` sibling in the same `group_id` may not.
@@ -169,11 +169,15 @@ reports; do not inspect or display raw prompt corpora.
 
 ## Splits and hygiene
 
-- Split by **attack family**, not randomly. All variants of a pair stay in the same split.
-- Assignment is deterministic: a split config lists held-out attack families explicitly; other attack
-  families and all benign `group_id`s are assigned by a hash of the name, so adding data never moves
-  existing rows. Each split reports its counts by channel and technique, so a gap (no `email` attacks
-  in held-out, say) is visible before any number is quoted.
+- Reserved **attack families** appear only in heldout, never in train/dev/test.
+- Other attacks and benign rows are assigned by a deterministic hash of `group_id`, keeping all
+  variants of a pair together. Adding data never moves existing groups. This permits both classes
+  in every evaluation split when enough groups are available; check the manifest counts.
+- Leakage trade-off: non-reserved families can occur across train/dev/test/heldout. Dev metrics
+  therefore measure new groups within familiar families, not family generalization. Overall held-out
+  metrics mix familiar and reserved novel families; use per-family metrics to assess novelty.
+  Near duplicates across groups can still leak. Each split reports channel and technique counts
+  so coverage gaps remain visible.
 - Near-duplicate deduplication is a separate step and is out of scope for the split command.
 - Keep a held-out set that is never used for tuning.
 - The evaluator approves items into datasets and tracks label source. Only datasets marked publishable
@@ -200,9 +204,15 @@ The split config is a small JSON file:
 }
 ```
 
-Attack rows are assigned by `attack_family`; benign rows by `group_id`. Held-out families go to the
-`heldout` split. Other families and benign groups are assigned by SHA-256 of the name to train/dev/test
-according to the proportions. A `group_id` that spans multiple `attack_family` values is an error.
+Reserved attack families go to `heldout`. All other rows are assigned by SHA-256 of `group_id`.
+The existing three-key proportions remain supported: train and dev retain their configured shares;
+the test share is divided equally between test and heldout. For the example above, hash buckets
+allocate 70% train, 15% dev, 7.5% test and 7.5% heldout, before adding reserved attacks to heldout.
+The first four SHA-256 bytes modulo 100 select a bucket, so proportions resolve to whole percent
+buckets (the example's effective test/heldout shares are 8%/7%). Tiny datasets need not contain both
+classes in every split. A `group_id` spanning multiple `attack_family` values is an error.
+The manifest records `split_version: 2`; iterate.py also hashes the split producer code, so this
+change starts a new iteration without changing the live config.
 
 Outputs: `train.jsonl`, `dev.jsonl`, `test.jsonl`, `heldout.jsonl`, and `split_manifest.json` in the
 output directory. The manifest contains per-split counts by label, channel, technique, and family, plus
@@ -247,8 +257,8 @@ explicit snapshot provenance. It keeps the source-wide family/group. Other sourc
 conversions for labels, grouping or nested text. Loaders derive other missing groups from text
 hashes, use source families where present, and collapse
 identical mapped records while reporting duplicate counts. Near duplicates, cross-source
-duplicates, conflicting labels and original train/test splits are not resolved here. Family-aware
-splits remain a separate step. OASST2 branches containing rejected/deleted nodes are omitted,
+duplicates, conflicting labels and original train/test splits are not resolved here. Group hashing
+and reserved-family splits remain a separate step. OASST2 branches containing rejected/deleted nodes are omitted,
 not spliced into shorter conversations.
 
 Manifests add loader version, pinned citation, ordered raw-file SHA-256 values, input-row,
