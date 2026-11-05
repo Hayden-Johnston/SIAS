@@ -87,9 +87,10 @@ settings, score min/max/mean and cached latency totals/means. Add an optional st
 ```
 
 Then run `uv run python -m data_processing.run data/run-config.json runs/cpu-model`.
-This uses the existing optional chunk-stage contract without adding inference to the runner or
-changing `ops/iterate.py`. Replay needs only the exported score cache and dataset/config; it
-reports detection, false positives and location with sample sizes and 95% Wilson intervals.
+This uses the existing optional chunk-stage contract without adding inference to the runner.
+For iteration fusion, use the optional `cpu_classifier` settings documented below. Replay needs
+only the exported score cache and dataset/config; it reports detection, false positives and
+location with sample sizes and 95% Wilson intervals.
 The stage version pins producer code, checkpoint, declared size, instruction and generation
 settings; windows are pinned in the run config. Changing weights behind a served alias cannot be
 detected: use checkpoint-specific IDs. Reusing cached requests preserves original HTTP latency
@@ -272,7 +273,7 @@ are ignored. Export caches separately with `data_processing.probe`; the iteratio
 activations or trains a probe and needs no activation extras to replay.
 
 Both files must exist to add `activation-probe`: dev weight selection and held-out evaluation
-require identical stages. If the setting is omitted or either file is absent, rules + Maya fusion
+require identical stages. If the setting is omitted or either file is absent, fusion with the remaining stages
 continues and the report says `probe: not available`. Configured cache contents and availability
 participate in iteration identity, so adding a previously missing cache creates a new iteration.
 The report and completion manifest name the fusion stages and record probe availability.
@@ -280,3 +281,42 @@ Fusion still uses the existing dev-only weight sweep and the same capped samples
 rules metrics remain separate. Zero probe latency is unmeasured and excludes capture/training.
 Probe training on dev makes dev probe metrics in-sample; this integration does not change that
 limitation or establish held-out detection quality.
+
+## Optional iteration CPU classifier
+
+Add `cpu_classifier` to the local `ops/iterate.py` config to fuse existing
+`data_processing.model_stage` exports:
+
+```json
+"cpu_classifier": {
+  "version": "REPLACE_WITH_MODEL_STAGE_VERSION",
+  "threshold": 0.5,
+  "chunk_chars": 4096,
+  "overlap_chars": 512,
+  "dev": {
+    "cache": "caches/dev-model.jsonl",
+    "cache_sha256": "REPLACE_WITH_DEV_CACHE_SHA256"
+  },
+  "heldout": {
+    "cache": "caches/heldout-model.jsonl",
+    "cache_sha256": "REPLACE_WITH_HELDOUT_CACHE_SHA256"
+  }
+}
+```
+
+Use the returned shared version and exact window settings from the CPU model exports. Paths
+resolve relative to the iteration config. Caches must cover the exact scoring splits (including
+augmentation when enabled), or at least every chunk of every deterministic Maya sample row.
+Full-split caches are filtered by sampled ID, retaining all chunks. Replay uses each row's maximum
+chunk score and preserves cached latency and location metrics. Invalid sampled entries, missing
+chunks or incorrect checksums fail; no scores are fabricated or inferred.
+
+Both files must exist to include `cpu-classifier` in dev weight selection and held-out evaluation.
+If the setting is omitted or either cache is absent, the report says `cpu-classifier: not available`
+and fusion continues with rules, Maya and any available activation probe. Configured cache hashes
+and availability participate in iteration identity; adding a missing cache creates a new iteration.
+Reports name all fused stages, and the completion manifest records `cpu_classifier` availability.
+The existing dev-only weight sweep and capped sample are unchanged. The iteration never calls the
+CPU endpoint or starts a server; export caches separately. The existing Maya sample stage may
+still need inference. Cached latency is original classifier work, not replay time or a new CPU
+benchmark. This integration establishes no held-out detection quality by itself.
