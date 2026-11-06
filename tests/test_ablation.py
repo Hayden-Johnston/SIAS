@@ -69,6 +69,36 @@ def test_all_fits_before_heldout_and_refit_can_reactivate_stage(tmp_path):
         assert before["removed_stages"][name]["weights"] == after["removed_stages"][name]["weights"]
 
 
+@pytest.mark.parametrize("held_scores", [[0, 1, 0, 0], [0, 1, 1, 1]])
+def test_zero_dev_chunk_classifier_has_no_fused_effect(tmp_path, held_scores):
+    # Like iteration 8: the CPU classifier is silent on dev but fires on held-out.
+    scores = [[0, 0, 0, 0], [1, 0, 0, 0]]
+    dev = config(tmp_path / "dev", "validation", scores)
+    held = config(tmp_path / "held", "held_out", scores)
+    for path, values in ((dev, [0, 0, 0, 0]), (held, held_scores)):
+        data = json.loads(path.read_text())
+        for stage, name in zip(data["stages"], ("rules", "maya")):
+            stage["name"] = name
+        cache = path.parent / "cpu.jsonl"
+        cache.write_text("".join(json.dumps({
+            "id": str(i), "turn": 0, "start": 0, "score": value, "latency_ms": 1000,
+        }) + "\n" for i, value in enumerate(values)))
+        data["stages"].append({
+            "name": "cpu-classifier", "version": "fixture-v1", "threshold": 0.5,
+            "cache": cache.name, "cache_sha256": run.digest(cache),
+            "chunk_chars": 100, "overlap_chars": 0,
+        })
+        update(path, stages=data["stages"])
+    result = ablation.ablation(dev, held, 0.0002)
+    assert result["full"]["weights"] == {"cpu-classifier": 0, "maya": 0.5, "rules": 0}
+    without = result["removed_stages"]["cpu-classifier"]
+    assert without["weights"] == {"maya": 0.5, "rules": 0}
+    assert without["held_out_metrics"] == result["full"]["held_out_metrics"]
+    assert without["held_out_metrics"]["detection"] == run.rate(1, 2)
+    assert without["held_out_metrics"]["false_positive"] == run.rate(0, 2)
+    assert without["delta_vs_full"] == {"detection": 0, "false_positive": 0}
+
+
 @pytest.mark.parametrize("fault", ["split", "settings", "missing", "cap", "single", "infeasible"])
 def test_invalid_inputs_preserve_output(configs, tmp_path, fault):
     dev, held = configs
