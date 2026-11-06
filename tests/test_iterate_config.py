@@ -52,6 +52,15 @@ def test_example_config_is_valid():
     assert rt['enabled'] is False
 
 
+def test_example_sample_cap_fits_cpu_tick_budget():
+    # Iteration 8: dev + held-out cached CPU seconds for 25 records per split.
+    # Reserve half of a 300-second tick for other CPU jobs; see the cap report.
+    seconds_per_cap = (522.8178502860828 + 132.40112292100093) / 25
+    cap = json.loads(EXAMPLE.read_text())['sample_cap']
+    assert cap * seconds_per_cap <= 150
+    assert (cap + 1) * seconds_per_cap > 150
+
+
 @pytest.mark.parametrize('key', sorted(REQUIRED))
 def test_missing_required_key(tmp_path, key):
     config = valid_config()

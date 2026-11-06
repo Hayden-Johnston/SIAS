@@ -225,7 +225,10 @@ without benign rows fails. Added row counts per channel/split appear in the iter
 manifest and report; labels remain synthetic and unapproved.
 Rules score every augmented dev (validation) and heldout row. The queued Maya classifier scores
 only a deterministic hash-selected sample of each split: `sample_cap` is 1–25 per split, at most
-50 classifier prompts per iteration. Each stage/split gets a separate numbered run manifest under
+50 classifier prompts per iteration. The example uses 5 per split, projecting 131 seconds of CPU
+classifier work against a 150-second budget per five-minute tick; this is a planning estimate,
+not a runtime limit or a whole-iteration budget. See the [cap measurements](reports/2026-11-06-classifier-sample-cap.md).
+Each stage/split gets a separate numbered run manifest under
 the configured data directory's `runs/`, visible in dashboard Metrics, and a dated report in
 `reports/`. Rules retain full-split metrics; Maya and fused rules+Maya rates apply only to
 the capped sample. Fusion reuses cached scores, selecting weights on the dev sample with the
