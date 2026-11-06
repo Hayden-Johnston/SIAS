@@ -421,6 +421,19 @@ python3 ops/coverage.py source.manifest.json --output reports/coverage.md
 python3 ops/coverage.py --targets-output coverage-targets.json
 ```
 
+Count the benign source pool by channel and source using aggregate manifests only:
+
+```sh
+uv run python -m data_processing.benign_gap --output benign-gap.json
+# Or select disjoint source manifests explicitly:
+uv run python -m data_processing.benign_gap source.manifest.json
+```
+
+The [benign gap report](reports/2026-11-06-benign-gap.md) compares the pool with the
+15,000 benign held-out target. Source-pool totals do not establish held-out coverage or evaluator
+approval; held-out counts/gaps are unknown (`null`). Mixed-channel benign counts that cannot be
+inferred exactly from the manifests are also `null`. The command reads no payload files.
+
 ## Roadmap
 
 1. **Infrastructure:** schema and normalization, replayable runs, dashboard, model client and
