@@ -356,6 +356,9 @@ def test_fused_sample_sweep_slices_and_replay(setup, monkeypatch):
     result = run(setup)
     summary = result['fusion']
     assert summary['status'] == 'complete'
+    # The scheduled config omits activation_probe until real exports are available.
+    assert result['probe'] == 'not available'
+    assert summary['stages'] == ['rules', 'maya']
     assert summary['dev']['weights'] == {'maya': 0, 'rules': 0}
     assert summary['held_out_delta_vs_best_single'] == {'detection': 0, 'false_positive': 0}
     work = next(setup[1].glob('runs/.iterations/*/state.json')).parent
@@ -374,6 +377,7 @@ def test_fused_sample_sweep_slices_and_replay(setup, monkeypatch):
     assert all(r == full[r['id']] for r in subset)
     assert FakeClient.batches == [25, fused['records']]
     report = next(setup[2].glob('*.md')).read_text()
+    assert 'probe: not available' in report
     assert 'held_out_delta_vs_best_single' in report and 'ci95' in report
     # Removing only the final checkpoint must replay byte-identically with no inference.
     before = {p: p.read_bytes() for p in setup[1].rglob('*') if p.is_file()}
