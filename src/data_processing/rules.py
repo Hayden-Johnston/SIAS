@@ -112,6 +112,13 @@ RULES = (
         r"\b(?:never|do not|don't|must not)\s+(?:say|tell|mention)\b"
         r"(?:\W+\w+){0,4}\W+(?:cannot|can't|unable)\b"
     )),
+    # Round-4 dev misses: second-person exemption from policy obligations.
+    # Bound both gaps to four words; policy discussion alone is insufficient.
+    (0.75, re.compile(
+        r"\byou\b(?:\W+\w+){0,4}\W+(?:not|no longer)\s+"
+        r"(?:bound by|subject to|required to follow)\b"
+        r"(?:\W+\w+){0,4}\W+(?:polic(?:y|ies)|guidelines?|rules?)\b"
+    )),
     # Encoding is suspicious but also common in benign technical material.
     # Require 32 base64 characters (eight blocks), eight escapes/percent bytes,
     # or sixteen hex bytes. This weak signal also applies to undecodable data.

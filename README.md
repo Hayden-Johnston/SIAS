@@ -69,7 +69,7 @@ configured fusion FPR by benign channel and source, with flagged IDs and no payl
 An offline [miss analysis](docs/pipeline.md#miss-analysis) exports dev or held-out missed
 attack IDs grouped by technique and channel, without loading payload text. Rule changes use
 dev misses only; held-out gaps are for reporting. Rules also catch bounded persona,
-safety suspension and universal request-compliance cues selected from dev misses.
+safety suspension, policy exemption and universal request-compliance cues selected from dev misses.
 
 ### The red-team loop
 
