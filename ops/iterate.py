@@ -80,11 +80,16 @@ def red_team_round(work, config, timestamp):
             candidates = generate.generate(
                 work / 'candidates', model=config['model'], timestamp=timestamp, client=client,
                 groups=options['groups'], batch_size=1, max_tokens=options['max_tokens'],
-                carrier_chars=options['carrier_chars'], replay_only=options['replay_only'])
+                carrier_chars=options['carrier_chars'], replay_only=options['replay_only'],
+                coverage=options.get('coverage'))
         except generate.GenerationUnavailable as error:
             summary['status'] = str(error)
             print('red-team round skipped: ' + str(error))
         else:
+            if candidates.get('groups') == 0:
+                summary['status'] = 'no coverage targets'
+                write_json(checkpoint, summary)
+                return summary
             source = work / 'candidates' / candidates['generator']['run_id']
             approved = evaluate.evaluate(
                 source / 'candidates.jsonl', source / 'manifest.json', work / 'evaluated',
@@ -172,7 +177,8 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
     if not isinstance(options, dict) or type(options.get('enabled')) is not bool:
         raise ValueError('red_team requires a boolean enabled field')
     fields = {'enabled', 'groups', 'max_tokens', 'carrier_chars', 'replay_only', 'binary', 'inventory'}
-    if set(options) - fields or (options['enabled'] and set(options) != fields):
+    path_fields = ('binary', 'inventory') + (('coverage',) if 'coverage' in options else ())
+    if set(options) - fields - {'coverage'} or (options['enabled'] and not fields <= set(options)):
         raise ValueError('red_team must contain the documented fields')
     if options['enabled']:
         for name in ('groups', 'max_tokens', 'carrier_chars'):
@@ -180,7 +186,7 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
                 raise ValueError('invalid red_team count')
         if type(options['replay_only']) is not bool:
             raise ValueError('red_team replay_only must be boolean')
-        for name in ('binary', 'inventory'):
+        for name in path_fields:
             if not isinstance(options[name], str) or not options[name].strip():
                 raise ValueError('red_team paths must be nonempty strings')
     for key in ('sample_cap', 'max_tokens'):
@@ -277,7 +283,7 @@ def iterate(config_path, *, data=DATA, reports=REPO / 'reports'):
         identity['red_team'] = [digest(generate.__file__), digest(evaluate.__file__)]
         # Resolve paths after hashing the original config so its identity stays stable.
         options = options.copy()
-        for name in ('binary', 'inventory'):
+        for name in path_fields:
             options[name] = config_path.resolve().parent / options[name]
             identity['red_team'].append(digest(options[name]))
         config = config | {'red_team': options}

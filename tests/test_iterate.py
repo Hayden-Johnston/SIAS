@@ -169,11 +169,17 @@ def test_red_team_off_never_generates(setup, monkeypatch):
         'status': 'off', 'generated': 0, 'approved': 0, 'approval_rate': None}
 
 
-def test_red_team_approval_split_resume_and_replay(setup, monkeypatch, capsys):
+@pytest.mark.parametrize('targeted', [False, True])
+def test_red_team_approval_split_resume_and_replay(setup, monkeypatch, capsys, targeted):
     from test_evaluate import FakeClient as Evaluator
     from test_generate import FakeClient as Generator
 
     enable_red_team(setup)
+    if targeted:
+        coverage = setup[0].parent / 'coverage.json'
+        coverage.write_text(json.dumps({'targets': [
+            {'channel': 'code_comment', 'technique': 'delimiter_spoof'}]}))
+        enable_red_team(setup, groups=30, coverage='coverage.json')
     generator = Generator()
     monkeypatch.setattr(iterate, 'Client', lambda path, **k:
                         generator if path.name == 'generator.sqlite' else FakeClient())
@@ -238,6 +244,43 @@ def test_red_team_unavailable_skips_cleanly(setup, monkeypatch, capsys, replay_o
     assert result['red_team']['approved'] == 0
     assert len(result['runs']) == 4
     assert 'red-team round skipped: ' + expected in capsys.readouterr().out
+    work = next(setup[1].glob('runs/.iterations/*/state.json')).parent
+    assert json.loads((work / 'red-team.json').read_text()) == result['red_team']
+    (work / 'complete.json').unlink()
+    monkeypatch.setattr(iterate.generate, 'generate', lambda *a, **k: pytest.fail('retried skip'))
+    assert run(setup) == result
+
+
+def test_red_team_coverage_cap_identity_and_empty_targets(setup, monkeypatch):
+    coverage = setup[0].parent / 'coverage.json'
+    targets = [{'channel': channel, 'technique': technique}
+               for channel in sorted(iterate.generate.CHANNELS)
+               for technique in sorted(iterate.generate.TECHNIQUES)]
+    coverage.write_text(json.dumps({'targets': targets}))
+    enable_red_team(setup, groups=30, coverage='coverage.json')
+    real_generate = iterate.generate.generate
+    plans = []
+
+    def plan(*args, **kwargs):
+        assert kwargs['coverage'] == coverage
+        assert kwargs['batch_size'] == 1
+        result = real_generate(*args, **kwargs, dry_run=True)
+        plans.append(result)
+        if result['groups']:
+            raise iterate.generate.GenerationUnavailable('Maya unreachable')
+        return result
+
+    monkeypatch.setattr(iterate.generate, 'generate', plan)
+    monkeypatch.setattr(iterate.evaluate, 'evaluate', lambda *a, **k: pytest.fail('evaluated'))
+    first = run(setup)
+    assert plans[0]['groups'] == 30
+    assert plans[0]['expected_records'] == 120
+    coverage.write_text(json.dumps({'targets': []}))
+    second = run(setup)
+    assert second['iteration'] == first['iteration'] + 1
+    assert second['red_team'] == {
+        'status': 'no coverage targets', 'generated': 0, 'approved': 0, 'approval_rate': None}
+    assert plans[1]['groups'] == 0
 
 
 def test_red_team_refusal_stops_iteration(setup, monkeypatch):

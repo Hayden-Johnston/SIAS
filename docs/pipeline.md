@@ -408,6 +408,11 @@ rate. These measure evaluator agreement, not detection improvement. Generation c
 Completed rounds resume without regeneration or reevaluation. Generation replay-only mode does not
 disable inference in other stages. No Maya lifecycle operations are performed.
 
+Set `red_team.coverage` to the GAP/LOW target JSON exported by `ops/coverage.py --targets-output`.
+The path resolves relative to the config; changing its contents starts a new iteration. The example
+uses `groups: 30`: at most 30 serial generation requests, 90 attack variants and 30 hard negatives
+before evaluator filtering. Empty target lists checkpoint `no coverage targets` without evaluation.
+
 ## Offline activation probe cache
 
 With `uv sync --extra activations`, train a CPU NumPy logistic probe without inference:

@@ -261,6 +261,13 @@ rows (`label_source: evaluator`) join the normalized dataset; a separate `genera
 keeps their train/dev/test/heldout splits under the iteration checkpoint, using the same family
 assignment. Mixed source/generated run metrics remain `evaluator_approved: false`.
 
+The example caps the round at 30 triples (90 attack variants and 30 hard negatives), bounding
+generation to 30 serial requests before evaluator filtering. Export GAP/LOW targets with
+`python3 ops/coverage.py --targets-output coverage-targets.json`; the optional `red_team.coverage`
+path selects those targets in deterministic order, up to `groups`. It resolves relative to the
+iteration config, and its contents participate in checkpoint identity. Empty targets checkpoint a
+zero-generation round without evaluation. Targets describe marginal coverage gaps, not joint counts.
+
 Maya transport failures or replay-only generation cache misses log a skip and continue with source
 data. Skips are checkpointed for that iteration; changing config creates a new iteration. Refusals
 and permanent failures stop the iteration. The round starts a CPU-only evaluator child when needed,

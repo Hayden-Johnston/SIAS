@@ -21,7 +21,8 @@
   "model_threshold": 0.5,
   "red_team": {
     "enabled": false,
-    "groups": 2,
+    "groups": 30,
+    "coverage": "coverage-targets.json",
     "max_tokens": 2048,
     "carrier_chars": 8192,
     "replay_only": false,
